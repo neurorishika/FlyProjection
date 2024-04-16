@@ -18,7 +18,11 @@ parser.add_argument('--exp_dir', type=str, default='flyprojection', help='Path t
 parser.add_argument('--data_dir', type=str, default='data/', help='Path to the data directory')
 parser.add_argument('--config_dir', type=str, default='configs/', help='Path to the config directory')
 parser.add_argument('--debug', action='store_true', help='Run in debug mode')
-parser.add_argument('--crop', action='store_true', help='Crop the image to the region of interest')
+parser.add_argument('--nocrop', action='store_true', help='Crop the image to the region of interest')
+parser.add_argument('--lossy', action='store_true', help='Record video in lossy format')
+parser.add_argument('--boundary', action='store_true', help='Show the boundary in the experiment')
+parser.add_argument('--ctrax', action='store_true', help='Prepare the data for Ctrax')
+parser.add_argument('--compress', action='store_true', help='Compress the video to save space')
 
 # parse the arguments
 args = parser.parse_args()
@@ -27,7 +31,11 @@ data_dir = args.data_dir
 repo_dir = args.repo_dir
 config_dir = args.config_dir
 debug = True if args.debug else False
-crop = True if args.crop else False
+crop = False if args.nocrop else True
+lossless = False if args.lossy else True
+show_boundary = True if args.boundary else False
+convert_to_avi = True if args.ctrax else False
+compress = True if (args.compress and lossless) else False
 
 # list the cameras
 cameras = list_cameras()
@@ -79,6 +87,9 @@ os.system(f"cp {os.path.join(exp_dir, 'config.py')} {os.path.join(repo_dir, 'fly
 os.system(f"cp {os.path.join(exp_dir, 'experiment_logic.py')} {os.path.join(repo_dir, 'flyprojection')}")
 print("Copied config.py and experiment_logic.py to data directory and repo directory.")
 
+# copy the rig_config.json file to the data directory
+os.system(f"cp {os.path.join(repo_dir, config_dir, 'rig_config.json')} {exp_data_dir}")
+
 # load the config.py file
 exec(open(os.path.join(repo_dir, 'flyprojection', 'config.py')).read())
 
@@ -86,7 +97,7 @@ exec(open(os.path.join(repo_dir, 'flyprojection', 'config.py')).read())
 exec(open(os.path.join(repo_dir, 'flyprojection', 'experiment_logic.py')).read())
 
 # assert that required variables are defined
-for var in ['SHOW_BOUNDARY', 'BOUNDARY_COLOR', 'BOUNDARY_WIDTH', 'BACKGROUND_COLOR','CONVERT_TO_AVI', 'ROI_TYPE']:
+for var in ['BOUNDARY_COLOR', 'BOUNDARY_WIDTH', 'BACKGROUND_COLOR', 'ROI_TYPE']:
     assert var in locals(), f"Variable {var} not defined in config.py"
 
 # assert that required functions are defined
@@ -122,7 +133,7 @@ clock = pygame.time.Clock()
 setup()
 
 # start the camera
-with SpinnakerCamera(video_output_name=exp_name, video_output_path=exp_data_dir, record_video=True, FPS=rig_config['FPS'], lossless=False) as camera:
+with SpinnakerCamera(video_output_name=exp_name, video_output_path=exp_data_dir, record_video=True, FPS=rig_config['FPS'], lossless=lossless) as camera:
     camera.start()
 
     # a loop to make sure the view is correct
@@ -274,7 +285,7 @@ with SpinnakerCamera(video_output_name=exp_name, video_output_path=exp_data_dir,
         screen.fill(BACKGROUND_COLOR)
         
         # Show boundary (if needed)
-        if SHOW_BOUNDARY:
+        if show_boundary:
             # rectangular boundary in white filled with black
             pygame.draw.rect(screen, BOUNDARY_COLOR, (BOUNDARY_X[0], BOUNDARY_Y[0], BOUNDARY_X[1]-BOUNDARY_X[0], BOUNDARY_Y[1]-BOUNDARY_Y[0]), BOUNDARY_WIDTH)
 
@@ -302,25 +313,42 @@ if not 'SPLIT_TIMES' in locals():
 if len(SPLIT_TIMES) > 0:
     print("Splitting the video into phases...")
     SPLIT_TIMES = [0] + SPLIT_TIMES + [elapsed_time]
-    # add one frame worth of time to the end of each phase
-    SPLIT_TIMES = [time + 1/rig_config['FPS'] for time in SPLIT_TIMES]
+    # add a few frames worth of time to the end of each phase
+    SPLIT_TIMES = [time + 2/rig_config['FPS'] for time in SPLIT_TIMES]
     for i in range(len(SPLIT_TIMES)-1):
         print(f"\n\n\nSplitting phase {i+1}...\n\n\n")
         # ffmpeg command to split the video
-        command = f"ffmpeg -i {os.path.join(exp_data_dir, exp_name)}.mp4 -ss {SPLIT_TIMES[i]} -to {SPLIT_TIMES[i+1]} {os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.mp4"
+        command = f"ffmpeg -i {os.path.join(exp_data_dir, exp_name)}.mp4 -ss {SPLIT_TIMES[i]} -to {SPLIT_TIMES[i+1]} -c:v libx264{' -crf 0' if lossless else ''} {os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.mp4" 
         os.system(command)
     print("Video split into phases.")
     split = True
+else:
+    split = False
 
 # convert the video to uncompressed AVI
-if CONVERT_TO_AVI:
+if convert_to_avi:
     print("Converting the video to uncompressed AVI...")
+    # create a subfolder for the avi files
+    os.makedirs(os.path.join(exp_data_dir, 'avi'), exist_ok=True)
     if split:
         for i in range(len(SPLIT_TIMES)-1):
-            command = f"mencoder {os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.mp4 -o {os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.avi -vf format=rgb24 -ovc raw -nosound"
+            command = f"mencoder {os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.mp4 -o {os.path.join(exp_data_dir, 'avi', exp_name)}_phase_{i+1}.avi -vf format=rgb24 -ovc raw -nosound"
             os.system(command)
     else:
-        command = "mencoder {} -o {}.avi -vf format=rgb24 -ovc raw -nosound".format(os.path.join(exp_data_dir, exp_name + '.mp4'), os.path.join(exp_data_dir, exp_name + '_processed'))
+        command = "mencoder {} -o {}.avi -vf format=rgb24 -ovc raw -nosound".format(os.path.join(exp_data_dir, exp_name + '.mp4'), os.path.join(exp_data_dir, 'avi', exp_name + '_processed'))
+        os.system(command)
+
+# compress the video to save space
+if compress:
+    print("Compressing the video to save space...")
+    # create a subfolder for the compressed files
+    os.makedirs(os.path.join(exp_data_dir, 'compressed'), exist_ok=True)
+    if split:
+        for i in range(len(SPLIT_TIMES)-1):
+            command = f"ffmpeg -i {os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.mp4 -c:v libx264 {os.path.join(exp_data_dir, 'compressed', exp_name)}_phase_{i+1}.mp4"
+            os.system(command)
+    else:
+        command = f"ffmpeg -i {os.path.join(exp_data_dir, exp_name)}.mp4 -c:v libx264 {os.path.join(exp_data_dir, 'compressed', exp_name)}.mp4"
         os.system(command)
 
 # exit the program

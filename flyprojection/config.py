@@ -1,6 +1,4 @@
 # FUNDAMENTALS
-SHOW_BOUNDARY = False
-CONVERT_TO_AVI = False
 ROI_TYPE = "rectangle" # "rectangle" or "circle"
 BOUNDARY_COLOR = "#FFFFFF"
 BOUNDARY_WIDTH = 1

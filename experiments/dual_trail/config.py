@@ -1,5 +1,5 @@
 # FUNDAMENTALS
-SHOW_BOUNDARY = False
+ROI_TYPE = "circle" # "rectangle" or "circle"
 BOUNDARY_COLOR = "#FFFFFF"
 BOUNDARY_WIDTH = 1
 BACKGROUND_COLOR = "#000000"
