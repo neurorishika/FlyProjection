@@ -1,0 +1,38 @@
+
+def setup():
+    global ADJUSTED_CENTER_1, ADJUSTED_TRAIL_1_RADIUS, ADJUSTED_TRAIL_1_WIDTH, ADJUSTED_TRAIL_1_COLOR, \
+        ADJUSTED_CENTER_2, ADJUSTED_TRAIL_2_RADIUS, ADJUSTED_TRAIL_2_WIDTH, ADJUSTED_TRAIL_2_COLOR, \
+        ADJUSTED_CENTER_3, ADJUSTED_TRAIL_3_RADIUS, ADJUSTED_TRAIL_3_WIDTH, ADJUSTED_TRAIL_3_COLOR
+
+    ADJUSTED_CENTER_1 = relative_to_absolute(TRAIL_1_CENTER[0], TRAIL_1_CENTER[1],rig_config)
+    ADJUSTED_TRAIL_1_RADIUS = int(TRAIL_1_RADIUS * SCALE_FACTOR)
+    ADJUSTED_TRAIL_1_WIDTH = int(TRAIL_1_WIDTH * SCALE_FACTOR)
+    ADJUSTED_TRAIL_1_COLOR = hex_to_rgb(TRAIL_1_COLOR) if type(TRAIL_1_COLOR) == str else TRAIL_1_COLOR if type(TRAIL_1_COLOR) == tuple else (255, 0, 0)
+
+    ADJUSTED_CENTER_2 = relative_to_absolute(TRAIL_2_CENTER[0], TRAIL_2_CENTER[1], rig_config)
+    ADJUSTED_TRAIL_2_RADIUS = int(TRAIL_2_RADIUS * SCALE_FACTOR)
+    ADJUSTED_TRAIL_2_WIDTH = int(TRAIL_2_WIDTH * SCALE_FACTOR)
+    ADJUSTED_TRAIL_2_COLOR = hex_to_rgb(TRAIL_2_COLOR) if type(TRAIL_2_COLOR) == str else TRAIL_2_COLOR if type(TRAIL_2_COLOR) == tuple else (0, 0, 0)
+
+    ADJUSTED_CENTER_3 = relative_to_absolute(TRAIL_3_CENTER[0], TRAIL_3_CENTER[1], rig_config)
+    ADJUSTED_TRAIL_3_RADIUS = int(TRAIL_3_RADIUS * SCALE_FACTOR)
+    ADJUSTED_TRAIL_3_WIDTH = int(TRAIL_3_WIDTH * SCALE_FACTOR)
+    ADJUSTED_TRAIL_3_COLOR = hex_to_rgb(TRAIL_3_COLOR) if type(TRAIL_3_COLOR) == str else TRAIL_3_COLOR if type(TRAIL_3_COLOR) == tuple else (255, 0, 0)
+
+    print("Setup complete.")
+
+def constants():
+    return
+
+def updates():
+    global running, elapsed_time
+    # draw a circular trail
+    if elapsed_time < PHASE_1_DURATION:
+        pygame.draw.circle(screen, ADJUSTED_TRAIL_1_COLOR, ADJUSTED_CENTER_1, ADJUSTED_TRAIL_1_RADIUS, ADJUSTED_TRAIL_1_WIDTH)
+    elif elapsed_time < PHASE_1_DURATION + PHASE_2_DURATION:
+        pygame.draw.circle(screen, ADJUSTED_TRAIL_2_COLOR, ADJUSTED_CENTER_2, ADJUSTED_TRAIL_2_RADIUS, ADJUSTED_TRAIL_2_WIDTH)
+    elif elapsed_time < PHASE_1_DURATION + PHASE_2_DURATION + PHASE_3_DURATION:
+        pygame.draw.circle(screen, ADJUSTED_TRAIL_3_COLOR, ADJUSTED_CENTER_3, ADJUSTED_TRAIL_3_RADIUS, ADJUSTED_TRAIL_3_WIDTH)
+    else:
+        running = False
+    return
