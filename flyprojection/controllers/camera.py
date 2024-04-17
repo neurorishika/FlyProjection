@@ -31,15 +31,16 @@ def list_cameras():
     return _SYSTEM.GetCameras()
 
 
-def video_writer(save_queue, writer):
+def video_writer(save_queue, writer, debug=False, fps=10):
     """
     Write images to disk.
     """
     image_counter = 0
     while True:
         image = save_queue.get()
-        if image_counter % 10*10 == 0:
-            print(f"Writing frame {image_counter}/{save_queue.qsize()}", end="\r")
+        if debug:
+            if image_counter % 10*fps == 0:
+                print(f"Writing frame {image_counter}/{save_queue.qsize()}", end="\r")
         if image is None:
             break
         else:
@@ -78,9 +79,8 @@ class SpinnakerCamera:
         record_video=True,
         video_output_path=None,
         video_output_name=None,
-        show_video=False,
-        show_every_n=None,
         lossless=True,
+        debug=False,
     ):
         """
         Initialize the camera object.
@@ -109,10 +109,6 @@ class SpinnakerCamera:
             self.video_output_path = video_output_path
             self.video_output_name = video_output_name
 
-        self.show_video = show_video
-        if self.show_video:
-            assert show_every_n is not None, "show_every_n must be specified if show_video is True"
-            self.show_every_n = show_every_n
 
         self.CAMERA_FORMAT = CAMERA_FORMAT
         self.EXPOSURE_TIME = EXPOSURE_TIME
@@ -132,6 +128,7 @@ class SpinnakerCamera:
         self.running = False
         self.lossless = lossless
         self.FPS = int(FPS)
+        self.debug = debug
 
     def init(self):
         """
@@ -183,7 +180,7 @@ class SpinnakerCamera:
                 outputdict={"-r": str(self.FPS), "-c:v": "libx264", "-crf": "0"} if self.lossless else {"-r": str(self.FPS), "-c:v": "libx264"},
             )
             self.save_queue = queue.Queue()
-            self.save_thread = threading.Thread(target=video_writer, args=(self.save_queue, self.writer))
+            self.save_thread = threading.Thread(target=video_writer, args=(self.save_queue, self.writer, self.debug, self.FPS))
 
         self.initialized = True
         print("Camera initialized.")

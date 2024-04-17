@@ -5,6 +5,8 @@ import argparse
 import datetime
 import time
 import json
+import redis
+import cv2
 
 from controllers.camera import SpinnakerCamera, list_cameras
 import matplotlib.pyplot as plt
@@ -13,16 +15,18 @@ from skg import nsphere_fit
 
 # set up the argument parser
 parser = argparse.ArgumentParser(description='Open/Closed Loop Fly Projection System')
-parser.add_argument('--repo_dir', type=str, default='/home/smellovision/FlyProjection/', help='Path to the repository directory')
-parser.add_argument('--exp_dir', type=str, default='flyprojection', help='Path to the experiments directory (defaults to last experiment)')
-parser.add_argument('--data_dir', type=str, default='data/', help='Path to the data directory')
-parser.add_argument('--config_dir', type=str, default='configs/', help='Path to the config directory')
-parser.add_argument('--debug', action='store_true', help='Run in debug mode')
+parser.add_argument('-r','--repo_dir', type=str, default='/home/smellovision/FlyProjection/', help='Path to the repository directory')
+parser.add_argument('-e','--exp_dir', type=str, default='flyprojection', help='Path to the experiments directory (defaults to last experiment)')
+parser.add_argument('-d','--data_dir', type=str, default='data/', help='Path to the data directory')
+parser.add_argument('-c','--config_dir', type=str, default='configs/', help='Path to the config directory')
+parser.add_argument('--nostream', action='store_true', help='Do not stream the video')
 parser.add_argument('--nocrop', action='store_true', help='Crop the image to the region of interest')
 parser.add_argument('--lossy', action='store_true', help='Record video in lossy format')
-parser.add_argument('--boundary', action='store_true', help='Show the boundary in the experiment')
+parser.add_argument('--show_boundary', action='store_true', help='Show the boundary in the experiment')
+parser.add_argument('--process', action='store_true', help='Post process the video immediately')
+parser.add_argument('--nocompress', action='store_true', help='Compress the video to save space')
 parser.add_argument('--ctrax', action='store_true', help='Prepare the data for Ctrax')
-parser.add_argument('--compress', action='store_true', help='Compress the video to save space')
+parser.add_argument('--debug', action='store_true', help='Run in debug mode')
 
 # parse the arguments
 args = parser.parse_args()
@@ -30,12 +34,14 @@ exp_dir = args.exp_dir
 data_dir = args.data_dir
 repo_dir = args.repo_dir
 config_dir = args.config_dir
+stream = False if args.nostream else True
 debug = True if args.debug else False
 crop = False if args.nocrop else True
 lossless = False if args.lossy else True
-show_boundary = True if args.boundary else False
+show_boundary = True if args.show_boundary else False
 convert_to_avi = True if args.ctrax else False
-compress = True if (args.compress and lossless) else False
+compress = False if (args.nocompress or not lossless) else True
+delay_processing = False if args.process else True
 
 # list the cameras
 cameras = list_cameras()
@@ -47,6 +53,11 @@ else:
     if len(cameras) > 1:
         print("Selecting the first camera. Change the index in main.py to select a different camera.")
 
+if stream:
+    # Connect to Redis
+    r = redis.Redis(host='localhost', port=6379, db=0)
+    print("Streaming the video.")
+
 # if data_dir is not a full path, make it a full path by joining it with repo_dir
 if not os.path.isabs(data_dir):
     data_dir = os.path.join(repo_dir, data_dir)
@@ -55,7 +66,12 @@ assert os.path.isdir(data_dir), f"Invalid data directory: {data_dir}"
 # if exp_dir is not a full path, make it a full path by joining it with repo_dir
 if not os.path.isabs(exp_dir):
     exp_dir = os.path.join(repo_dir, exp_dir)
+
+# make sure the experiment directory exists
 assert os.path.isdir(exp_dir), f"Invalid experiment directory: {exp_dir}"
+
+# remove the trailing slash from the experiment directory
+exp_dir = exp_dir.rstrip('/')
 
 # assert that there is a config.py file and experiment_logic.py file in the experiment directory and load them
 assert os.path.isfile(os.path.join(exp_dir, 'config.py')), f"config.py file not found in {exp_dir}"
@@ -133,7 +149,13 @@ clock = pygame.time.Clock()
 setup()
 
 # start the camera
-with SpinnakerCamera(video_output_name=exp_name, video_output_path=exp_data_dir, record_video=True, FPS=rig_config['FPS'], lossless=lossless) as camera:
+with SpinnakerCamera(
+    video_output_name=exp_name, 
+    video_output_path=exp_data_dir, 
+    record_video=True, 
+    FPS=rig_config['FPS'], 
+    lossless=lossless,
+    debug=debug) as camera:
     camera.start()
 
     # a loop to make sure the view is correct
@@ -265,8 +287,7 @@ with SpinnakerCamera(video_output_name=exp_name, video_output_path=exp_data_dir,
 
         # Calculate the time elapsed
         elapsed_time = time.time() - start_time
-        if debug:
-            print(f"Elapsed time: {elapsed_time:.2f} seconds", end='\r')
+        print(f"Elapsed time: {elapsed_time:.2f} seconds", end='\r')
         
         # Event handling
         for event in pygame.event.get():
@@ -280,6 +301,11 @@ with SpinnakerCamera(video_output_name=exp_name, video_output_path=exp_data_dir,
 
         # Get an image from the camera
         image = camera.get_array(wait=True, crop_bounds=[x_min, x_max, y_min, y_max] if crop else None)
+
+        if stream:
+            # encode the image and store it in Redis
+            _, image_bytes = cv2.imencode('.png', image)
+            r.set('latest_image', image_bytes.tobytes())
 
         # Clear the screen
         screen.fill(BACKGROUND_COLOR)
@@ -303,8 +329,14 @@ with SpinnakerCamera(video_output_name=exp_name, video_output_path=exp_data_dir,
 
 print("\nExperiment completed.")
 
+# if stream is True, send a white image to the stream
+if stream:
+    r.set('latest_image', cv2.imencode('.png', np.ones((rig_config['projector_height'], rig_config['projector_width'], 3), dtype=np.uint8)*255)[1].tobytes())
+
 # Quit Pygame
 pygame.quit()
+
+commands_to_run = []
 
 # Split the video into phases
 if not 'SPLIT_TIMES' in locals():
@@ -316,10 +348,13 @@ if len(SPLIT_TIMES) > 0:
     # add a few frames worth of time to the end of each phase
     SPLIT_TIMES = [time + 2/rig_config['FPS'] for time in SPLIT_TIMES]
     for i in range(len(SPLIT_TIMES)-1):
-        print(f"\n\n\nSplitting phase {i+1}...\n\n\n")
+        print(f"Splitting phase {i+1}...")
         # ffmpeg command to split the video
         command = f"ffmpeg -i {os.path.join(exp_data_dir, exp_name)}.mp4 -ss {SPLIT_TIMES[i]} -to {SPLIT_TIMES[i+1]} -c:v libx264{' -crf 0' if lossless else ''} {os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.mp4" 
-        os.system(command)
+        if delay_processing:
+            commands_to_run.append(command)
+        else:
+            os.system(command)
     print("Video split into phases.")
     split = True
 else:
@@ -333,10 +368,16 @@ if convert_to_avi:
     if split:
         for i in range(len(SPLIT_TIMES)-1):
             command = f"mencoder {os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.mp4 -o {os.path.join(exp_data_dir, 'avi', exp_name)}_phase_{i+1}.avi -vf format=rgb24 -ovc raw -nosound"
-            os.system(command)
+            if delay_processing:
+                commands_to_run.append(command)
+            else:
+                os.system(command)
     else:
         command = "mencoder {} -o {}.avi -vf format=rgb24 -ovc raw -nosound".format(os.path.join(exp_data_dir, exp_name + '.mp4'), os.path.join(exp_data_dir, 'avi', exp_name + '_processed'))
-        os.system(command)
+        if delay_processing:
+            commands_to_run.append(command)
+        else:
+            os.system(command)
 
 # compress the video to save space
 if compress:
@@ -346,10 +387,25 @@ if compress:
     if split:
         for i in range(len(SPLIT_TIMES)-1):
             command = f"ffmpeg -i {os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.mp4 -c:v libx264 {os.path.join(exp_data_dir, 'compressed', exp_name)}_phase_{i+1}.mp4"
-            os.system(command)
+            if delay_processing:
+                commands_to_run.append(command)
+            else:
+                os.system(command)
     else:
         command = f"ffmpeg -i {os.path.join(exp_data_dir, exp_name)}.mp4 -c:v libx264 {os.path.join(exp_data_dir, 'compressed', exp_name)}.mp4"
-        os.system(command)
+        if delay_processing:
+            commands_to_run.append(command)
+        else:
+            os.system(command)
+
+if delay_processing:
+    # create a bash script to run the commands
+    with open(os.path.join(exp_data_dir, 'process.sh'), 'w') as f:
+        f.write("#!/bin/bash\n")
+        for command in commands_to_run:
+            f.write(command + '\n')
+    os.system(f"chmod +x {os.path.join(exp_data_dir, 'process.sh')}")
+    print("Commands saved to process.sh. Run this script to process the video.")
 
 # exit the program
 exit(0)

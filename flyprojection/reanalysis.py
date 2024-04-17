@@ -5,6 +5,7 @@ import datetime
 import time
 import json
 import cv2
+from tqdm import tqdm
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,6 +17,7 @@ parser.add_argument('--data_dir', type=str, default='data/exp_name/timestamp', h
 parser.add_argument('--nocrop', action='store_true', help='Crop the image to the region of interest')
 parser.add_argument('--ctrax', action='store_true', help='Prepare the data for Ctrax')
 parser.add_argument('--compress', action='store_true', help='Compress the video file')
+parser.add_argument('--lossy', action='store_true', help='Compress the video file using lossy compression')
 
 # parse the arguments
 args = parser.parse_args()
@@ -23,6 +25,7 @@ data_dir = args.data_dir
 crop = False if args.nocrop else True
 convert_to_avi = args.ctrax
 compress = args.compress
+lossless = False if args.lossy else True
 
 
 # check if the data directory exists
@@ -69,16 +72,21 @@ if os.path.isfile(os.path.join(data_dir, 'arena_alignment.png')):
     # load the image
     image = cv2.imread(os.path.join(data_dir, 'arena_alignment.png'), cv2.IMREAD_GRAYSCALE)
 else:
-    # open the video file and get the first frame
+    # open the video file and get the average of 10 random frames
     cap = cv2.VideoCapture(os.path.join(data_dir, f"{exp_name}.mp4"))
-    ret, frame = cap.read()
+    frames = []
+    for i in tqdm(range(10)):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, np.random.randint(0, cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+        ret, frame = cap.read()
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
     cap.release()
-    # convert the frame to grayscale
-    image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    image = np.mean(frames, axis=0).astype(np.uint8)
 
 # show the image
 plt.imshow(image, cmap='gray')
 plt.title("Arena Alignment Image")
+# save the image
+plt.savefig(os.path.join(data_dir, 'arena_alignment.png'))
 plt.show()
 
 # get an ROI from the user
@@ -191,7 +199,7 @@ if crop:
     input("Press Enter to crop the video...")
 
     print("Cropping the video...")
-    command = f"ffmpeg -i {video_file} -vf crop={x_max-x_min}:{y_max-y_min}:{x_min}:{y_min} {os.path.join(data_dir, exp_name)}_cropped.mp4"
+    command = f"ffmpeg -i {video_file} -vf crop={x_max-x_min}:{y_max-y_min}:{x_min}:{y_min} -c:v libx264{' -crf 0' if lossless else ''} {os.path.join(data_dir, exp_name)}_cropped.mp4" 
     os.system(command)
     print("Video cropped.")
     video_file = os.path.join(data_dir, f"{exp_name}_cropped.mp4")
@@ -213,9 +221,9 @@ if len(SPLIT_TIMES) > 0:
     # add two frame worth of time to the end of each phase
     SPLIT_TIMES = [time + 2/rig_config['FPS'] for time in SPLIT_TIMES]
     for i in range(len(SPLIT_TIMES)-1):
-        print(f"\n\n\nSplitting phase {i+1}...\n\n\n")
+        print(f"Splitting phase {i+1}...")
         # ffmpeg command to split the video
-        command = f"ffmpeg -i {video_file} -ss {SPLIT_TIMES[i]} -to {SPLIT_TIMES[i+1]} {os.path.join(data_dir, exp_name)}_phase_{i+1}.mp4"
+        command = f"ffmpeg -i {video_file} -ss {SPLIT_TIMES[i]} -to {SPLIT_TIMES[i+1]} -c:v libx264{' -crf 0' if lossless else ''} {os.path.join(data_dir, exp_name)}_phase_{i+1}.mp4"
         os.system(command)
     print("Video split into phases.")
     split = True
