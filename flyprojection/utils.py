@@ -73,4 +73,43 @@ def rect_fit(points,force_rotation=None):
     x_pos, y_pos, width, height, rotation = result.x
     rect_points = get_rectangle_points(x_pos, y_pos, width, height, rotation)
     return rect_points, result.x
-    
+
+def draw_line(pygame, screen, color, start, end, width):
+    """Draw a line on the screen."""
+    pygame.draw.line(screen, color, start, end, width)
+
+def draw_rectangle(pygame, screen, color, rect, width):
+    """Draw a rectangle on the screen."""
+    pygame.draw.polygon(screen, color, rect, width)
+
+def draw_circle(pygame, screen, color, center, radius, width):
+    """Draw a circle on the screen."""
+    pygame.draw.circle(screen, color, center, radius, width)
+
+def draw_arc(pygame, screen, color, rect, start_angle, stop_angle, width, resolution=1/(2*np.pi)):
+    """
+    Draw an arc on the screen.
+    (CUSTOM FUNCTION AS PYGAME DOES NOT SUPPORT DRAWING ARCS WITH SPECIFIC WIDTH)
+    """
+    x, y, width, height = rect
+    center_x = x + width/2
+    center_y = y + height/2
+    start_point_x = int(center_x + width/2*np.cos(start_angle))
+    start_point_y = int(center_y + height/2*np.sin(start_angle))
+    for angle in np.arange(start_angle, stop_angle, resolution):
+        end_point_x = int(center_x + width/2*np.cos(angle + resolution))
+        end_point_y = int(center_y + height/2*np.sin(angle + resolution))
+        draw_line(pygame, screen, color, (start_point_x, start_point_y), (end_point_x, end_point_y), int(width))
+        start_point_x, start_point_y = end_point_x, end_point_y
+
+def draw_cubic_bezier(pygame, screen, color, points, width, resolution=0.01):
+    """
+    Draw a cubic bezier curve on the screen.
+    (CUSTOM FUNCTION AS PYGAME DOES NOT SUPPORT DRAWING CUBIC BEZIER CURVES)
+    """
+    for t in np.arange(0, 1, resolution):
+        x = (1-t)**3*points[0][0] + 3*t*(1-t)**2*points[1][0] + 3*t**2*(1-t)*points[2][0] + t**3*points[3][0]
+        y = (1-t)**3*points[0][1] + 3*t*(1-t)**2*points[1][1] + 3*t**2*(1-t)*points[2][1] + t**3*points[3][1]
+        next_x = (1-(t+resolution))**3*points[0][0] + 3*(t+resolution)*(1-(t+resolution))**2*points[1][0] + 3*(t+resolution)**2*(1-(t+resolution))*points[2][0] + (t+resolution)**3*points[3][0]
+        next_y = (1-(t+resolution))**3*points[0][1] + 3*(t+resolution)*(1-(t+resolution))**2*points[1][1] + 3*(t+resolution)**2*(1-(t+resolution))*points[2][1] + (t+resolution)**3*points[3][1]
+        draw_line(pygame, screen, color, (x, y), (next_x, next_y), width)

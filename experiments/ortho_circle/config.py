@@ -12,11 +12,10 @@ SPLIT_TIMES = [PRE_PERIOD_DURATION]
 # FULL PARAMETERS
 TRAIL_COLOR = "#FF0000"
 TRAIL_CENTER = (0.5, 0.5)
-GAP_WIDTH = 0.15 # in inches
-RADIUS = 1.8 # in inches
+RADIUS = 1.3 # in inches
 
-# YING PARAMETERS
-YING_WIDTH = 0.05 # in inches
+# A PARAMETERS
+A_WIDTH = 0.05 # in inches
 
-# YANG PARAMETERS
-YANG_WIDTH = 0.2 # in inches
+# B PARAMETERS
+B_WIDTH = 0.2 # in inches

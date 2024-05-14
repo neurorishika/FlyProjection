@@ -71,11 +71,11 @@ class SpinnakerCamera:
     def __init__(
         self,
         index=0,
-        FPS=10,
+        FPS=32,
         CAMERA_FORMAT="Mono8",
         EXPOSURE_TIME=15000,
         GAIN=20,
-        GAMMA=0.6,
+        GAMMA=1.0,
         record_video=True,
         video_output_path=None,
         video_output_name=None,
@@ -243,7 +243,7 @@ class SpinnakerCamera:
         """
         return self.cam.GetNextImage(PySpin.EVENT_TIMEOUT_INFINITE if wait else PySpin.EVENT_TIMEOUT_NONE)
 
-    def get_array(self, wait=True, get_chunk=False, dont_save=False, crop_bounds=None):
+    def get_array(self, wait=True, get_chunk=False, dont_save=False, crop_bounds=None, mask=None):
         """
         Get an image from the camera, and convert it to a NumPy/CuPy array.
 
@@ -267,6 +267,11 @@ class SpinnakerCamera:
             assert len(crop_bounds) == 4, "crop_bounds must be a list of 4 integers"
             x_min, x_max, y_min, y_max = crop_bounds
             arr = arr[y_min:y_max, x_min:x_max].copy()
+        
+        if mask is not None:
+            assert mask.shape == arr.shape, "mask must have the same shape as the image"
+            assert mask.dtype == np.uint8, "mask must be a binary image"
+            arr = arr * mask
 
         if self.record_video and not dont_save:
             self.timestamps.append(img.GetTimeStamp())
