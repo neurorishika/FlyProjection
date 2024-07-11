@@ -7,6 +7,8 @@ import time
 import json
 import redis
 import cv2
+import pickle
+import scipy.stats as stats
 
 from controllers.camera import SpinnakerCamera, list_cameras
 import matplotlib.pyplot as plt
@@ -19,14 +21,12 @@ parser.add_argument('-r','--repo_dir', type=str, default='/home/smellovision/Fly
 parser.add_argument('-e','--exp_dir', type=str, default='flyprojection', help='Path to the experiments directory (defaults to last experiment)')
 parser.add_argument('-d','--data_dir', type=str, default='data/', help='Path to the data directory')
 parser.add_argument('-c','--config_dir', type=str, default='configs/', help='Path to the config directory')
-parser.add_argument('--nostream', action='store_true', help='Do not stream the video')
-parser.add_argument('--nocrop', action='store_true', help='Crop the image to the region of interest')
-parser.add_argument('--lossy', action='store_true', help='Record video in lossy format')
-parser.add_argument('--show_boundary', action='store_true', help='Show the boundary in the experiment')
 parser.add_argument('--process', action='store_true', help='Post process the video immediately')
+parser.add_argument('--lossy', action='store_true', help='Record video in lossy format')
+parser.add_argument('--nostream', action='store_true', help='Do not stream the video')
 parser.add_argument('--nojpg', action='store_true', help='Do not save the images in mjpeg format')
+parser.add_argument('--nocrop', action='store_true', help='Crop the image to the region of interest')
 parser.add_argument('--debug', action='store_true', help='Run in debug mode')
-parser.add_argument('--test', action='store_true', help='Run in test mode')
 
 # parse the arguments
 args = parser.parse_args()
@@ -35,13 +35,11 @@ data_dir = args.data_dir
 repo_dir = args.repo_dir
 config_dir = args.config_dir
 stream = False if args.nostream else True
-debug = True if args.debug else False
 crop = False if args.nocrop else True
 lossless = False if args.lossy else True
-show_boundary = True if args.show_boundary else False
 jpg = False if (args.nojpg or not lossless) else True
 delay_processing = False if args.process else True
-test = True if args.test else False
+debug = True if args.debug else False
 
 # list the cameras
 cameras = list_cameras()
@@ -147,23 +145,23 @@ clock = pygame.time.Clock()
 
 # Call the setup function
 setup()
-1
+
 # start the camera
 with SpinnakerCamera(
     video_output_name=exp_name, 
     video_output_path=exp_data_dir, 
-    record_video=True if not test else False,
+    record_video=True if not debug else False,
     FPS=rig_config['FPS'], 
     lossless=lossless,
     debug=debug) as camera:
     camera.start()
 
-    if not test:
+    if not debug:
         # create a blue cross at the center of the working area
         center = relative_to_absolute(0.5, 0.5, rig_config)
         # draw the cross
-        pygame.draw.line(screen, (0, 0, 255), (center[0]-10, center[1]), (center[0]+10, center[1]), 5)
-        pygame.draw.line(screen, (0, 0, 255), (center[0], center[1]-10), (center[0], center[1]+10), 5)
+        pygame.draw.line(screen, (255, 255, 255), (center[0]-10, center[1]), (center[0]+10, center[1]), 5)
+        pygame.draw.line(screen, (255, 255, 255), (center[0], center[1]-10), (center[0], center[1]+10), 5)
         pygame.display.flip()
 
         # ask the user to align the arena with the cross
@@ -307,7 +305,9 @@ with SpinnakerCamera(
         crop_bounds = None
         mask = None
 
-    
+    # setup a frame metadata
+    frame_metadata = []
+
     # press enter to start the experiment
     input("Press Enter to start the experiment.")
 
@@ -345,7 +345,7 @@ with SpinnakerCamera(
         screen.fill(BACKGROUND_COLOR)
         
         # Show boundary (if needed)
-        if show_boundary:
+        if debug:
             # rectangular boundary in white filled with black
             pygame.draw.rect(screen, BOUNDARY_COLOR, (BOUNDARY_X[0], BOUNDARY_Y[0], BOUNDARY_X[1]-BOUNDARY_X[0], BOUNDARY_Y[1]-BOUNDARY_Y[0]), BOUNDARY_WIDTH)
 
@@ -373,6 +373,10 @@ if stream:
 # Quit Pygame
 pygame.quit()
 
+# save the frame metadata as a pickle file
+with open(os.path.join(exp_data_dir, 'frame_metadata.pkl'), 'wb') as f:
+    pickle.dump(frame_metadata, f)
+
 commands_to_run = []
 
 # Split the video into phases
@@ -388,10 +392,10 @@ if len(SPLIT_TIMES) > 0:
         print(f"Splitting phase {i+1}...")
         # ffmpeg command to split the video
         if jpg:
-            encoding = '-c:v mjpeg -q:v 1' if lossless else '-c:v mjpeg'
+            encoding = '-c:v mjpeg -qscale:v 1' if lossless else '-c:v mjpeg -qscale:v 10'
         else:
             encoding = '-c:v libx264 -crf 0' if lossless else '-c:v libx264'
-        command = f"ffmpeg -i {os.path.join(exp_data_dir, exp_name)}.mp4 -ss {SPLIT_TIMES[i]} -to {SPLIT_TIMES[i+1]} {encoding+" "}{os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.{".avi" if jpg else 'mp4'}"
+        command = f"ffmpeg -i {os.path.join(exp_data_dir, exp_name)}.mp4 -ss {SPLIT_TIMES[i]} -to {SPLIT_TIMES[i+1]} {encoding+' '}{os.path.join(exp_data_dir, exp_name)}_phase_{i+1}.mp4"
         if delay_processing:
             commands_to_run.append(command)
         else:

@@ -40,7 +40,7 @@ def video_writer(save_queue, writer, debug=False, fps=10):
         image = save_queue.get()
         if debug:
             if image_counter % 10*fps == 0:
-                print(f"Writing frame {image_counter}/{save_queue.qsize()}", end="\r")
+                print(f"Writing frame {image_counter}", end="\r")
         if image is None:
             break
         else:

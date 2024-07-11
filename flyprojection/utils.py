@@ -86,12 +86,16 @@ def draw_circle(pygame, screen, color, center, radius, width):
     """Draw a circle on the screen."""
     pygame.draw.circle(screen, color, center, radius, width)
 
-def draw_arc(pygame, screen, color, rect, start_angle, stop_angle, width, resolution=1/(2*np.pi)):
+def draw_arc(pygame, screen, color, rect, start_angle, stop_angle, trail_width, resolution=1/(20*np.pi)):
     """
     Draw an arc on the screen.
     (CUSTOM FUNCTION AS PYGAME DOES NOT SUPPORT DRAWING ARCS WITH SPECIFIC WIDTH)
     """
     x, y, width, height = rect
+    start_angle = (start_angle+np.pi)%(2*np.pi)
+    stop_angle = (stop_angle+np.pi)%(2*np.pi)
+    if start_angle > stop_angle:
+        stop_angle += 2*np.pi
     center_x = x + width/2
     center_y = y + height/2
     start_point_x = int(center_x + width/2*np.cos(start_angle))
@@ -99,7 +103,8 @@ def draw_arc(pygame, screen, color, rect, start_angle, stop_angle, width, resolu
     for angle in np.arange(start_angle, stop_angle, resolution):
         end_point_x = int(center_x + width/2*np.cos(angle + resolution))
         end_point_y = int(center_y + height/2*np.sin(angle + resolution))
-        draw_line(pygame, screen, color, (start_point_x, start_point_y), (end_point_x, end_point_y), int(width))
+        # draw line joining the points
+        draw_line(pygame, screen, color, (start_point_x, start_point_y), (end_point_x, end_point_y), trail_width)
         start_point_x, start_point_y = end_point_x, end_point_y
 
 def draw_cubic_bezier(pygame, screen, color, points, width, resolution=0.01):
