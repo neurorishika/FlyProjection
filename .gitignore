@@ -165,3 +165,19 @@ directory.path
 
 # Mac OS
 **/.DS_Store
+
+# Video files
+**/*.mp4
+**/*.avi
+**/*.mov
+
+# ignore all csv,png and mat files in the analysis folder and subfolders
+analysis/**/*.csv
+analysis/**/*.png
+analysis/**/*.mat
+
+# ignore everything in the processed_data folder and subfolders
+processed_data/*
+processed_data/**/*
+# except for the .gitkeep file
+!processed_data/.gitkeep
