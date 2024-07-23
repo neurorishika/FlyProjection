@@ -13,9 +13,8 @@ Project description is being updated. Please check back later.
 
 ## Instructions
 
-This is a [Poetry](https://python-poetry.org/)-enabled python project. Poetry installs a virtual environment in the project directory and all packages are installed in this virtual environment. This means that you do not need to install any packages in your system. The virtual environment is automatically activated when you run the project through Poetry. 
+This is a Poetry-enabled python project. Make sure you have poetry installed from https://python-poetry.org/.
 
-If you use [VS Code](https://code.visualstudio.com/), you can set the Python interpreter to the Poetry virtual environment `.venv` in the project directory for script execution and debugging and use the Poetry virtual environment `.venv` for the Jupyter kernel.
 
 First, you need to setup a git alias for tree generation by running the following command on the terminal:
 
@@ -23,17 +22,110 @@ First, you need to setup a git alias for tree generation by running the followin
 git config --global alias.tree '! git ls-tree --full-name --name-only -t -r HEAD | sed -e "s/[^-][^\/]*\//   |/g" -e "s/|\([^ ]\)/|-- \1/"'
 ```
 
-To run the project, make sure you have Poetry installed and run the following commands in the project directory:
+## Install Instructions (Assumes Ubuntu 22.04 LTS on Nvidia GPU)
+
+### PART 1: Make sure Nvidia Software is Installed
+
+Check the current version using: `cat /proc/driver/nvidia/version` If not discovered, follow instructions at: https://ubuntu.com/server/docs/nvidia-drivers-installation
+
+Verify by calling `nvidia-smi`. Output should look something like.
 
 ```
-poetry run python utils/update.py
-poetry run python utils/build.py
+Date-Time      
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.183.01             Driver Version: 535.183.01   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA GeForce RTX 4090        Off | 00000000:01:00.0 Off |                  Off |
+|  0%   41C    P8              26W / 450W |     11MiB / 24564MiB |      0%      Default |
+|                                         |                      |                  N/A |
++-----------------------------------------+----------------------+----------------------+
+                                                                                         
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|    0   N/A  N/A      2300      G   /usr/lib/xorg/Xorg                            4MiB |
++---------------------------------------------------------------------------------------+
+
 ```
 
-To run the Jupyter notebook, run the following command in the project directory:
+After this install the **Nvidia CUDA Toolkit**:
 
 ```
-poetry run jupyter notebook
+sudo apt update && sudo apt upgrade
+sudo apt-get install nvidia-cuda-toolkit
+sudo apt-get install nvidia-gds
+sudo reboot 
+```
+
+Verify installation using: `nvcc --version`
+
+```
+sudo apt-get install zlib1g
+sudo apt-get install nvidia-cudnn
+```
+
+### PART 2: Build FFMPEG
+
+Follow the instructions here: https://docs.nvidia.com/video-technologies/video-codec-sdk/12.1/ffmpeg-with-nvidia-gpu/index.html build and install ffmpeg.
+
+If there is an error with missing library path, do as follows:
+```
+sudo find / -name xxxxxxxxx.so.xx # find the library path using this, say /usr/local/lib, and change it in the next command
+echo "/usr/local/lib" | sudo tee -a /etc/ld.so.conf.d/mylibs.conf; sudo ldconfig
+```
+
+Verify that FFMPEG works using `ffmpeg -version` making sure the cuda flag is enabled (See example below).
+
+```
+ffmpeg version N-116392-g53d0f9afb4 Copyright (c) 2000-2024 the FFmpeg developers
+built with gcc 11 (Ubuntu 11.4.0-1ubuntu1~22.04)
+configuration: --enable-nonfree --enable-cuda-nvcc --enable-libnpp --extra-cflags=-I/usr/local/cuda/include --extra-ldflags=-L/usr/local/cuda/lib64 --disable-static --enable-shared
+...
+```
+
+### PART 3: Make sure Miniconda is Installed
+
+Install Mambaforge (a faster version of Miniconda), by running the following command:
+
+```
+wget -nc https://github.com/conda-forge/miniforge/releases/latest/download/Mambaforge-Linux-x86_64.sh && bash Mambaforge-Linux-x86_64.sh -b && ~/mambaforge/bin/conda init bash
+```
+
+### PART 4: Configure poetry to recognize the conda environment
+
+```
+poetry config virtualenvs.path $CONDA_ENV_PATH
+poetry config virtualenvs.create false
+```
+where `$CONDA_ENV_PATH` is the location of the conda envs, usually `/home/username/miniforge3/envs` but can be verified by running `conda info --envs`.
+
+### PART 5: Clone the Repository
+
+Move to the directory where you want to clone the repository and run the following commands:
+
+```
+git clone https://github.com/neurorishika/FlyProjection.git
+cd FlyProjection
+```
+
+### PART 6: Create the Conda Environment
+
+Start by creating the conda environment that includes cudatooolkit and cudnn (cross-check with [SLEAP](https://sleap.ai/) for the latest installation instructions).
+
+```
+conda create --name flyprojection pip python=3.9 cudatoolkit=11.3 cudnn=8.2
+```
+
+Activate the environment:
+
+```
+conda activate flyprojection
 ```
 
 ## Project Organization
