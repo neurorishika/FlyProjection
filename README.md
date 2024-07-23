@@ -5,7 +5,7 @@
 
 Author: [Rishika Mohanta](https://neurorishika.github.io/)
 
-Latest Build Date: 2024-04-09 17:23:49
+Latest Build Date: 2024-07-23 16:37:35
 
 ## About the Project
 
@@ -39,29 +39,118 @@ poetry run jupyter notebook
 ## Project Organization
 
 The project is organized as follows:
-
 ```
-rpy-template/
-├── flyprojection/ - Python package for common code
-│   ├── __init__.py
-│   └── rdp_client.py - for Rishika's Data Protection (RDP) Standard
-├── data/ - data directory
-│   └── .gitkeep
-├── analysis/ - analysis directory
-│   └── .gitkeep
-├── processed_data/ - processed data directory (tracked by git)
-│   └── .gitkeep
-├── utils/ - utilities directory for useful scripts (tracked by git)
-│   ├── build.py - build package and setup __init__.py for package with lazy imports
-│   ├── quickstart.py - quickstart script to setup project
-│   └── update.py - update template and build package
-├── scripts/ - scripts directory (tracked by git)
-│   └── .gitkeep
-├── tests/ - tests directory (tracked by git)
-│   └── __init__.py
-├── .gitignore - gitignore file
-├── director.path - file containing path to the repo directory
-├── poetry.lock - poetry lock file
-├── pyproject.toml - poetry project file
-└── README.md - README file
+.DS_Store
+.gitignore
+LICENSE
+README.md
+analysis
+   |-- .gitkeep
+   |-- 20hr-wingless-orco-yy
+   |   |-- analysis.ipynb
+   |   |-- arena.json
+   |   |-- video_gen.ipynb
+   |   |-- yang_props.json
+   |   |-- ying_props.json
+   |-- 20hrs-wingless-orcoctrl-yy2024-04-26_13-24
+   |   |-- analysis.ipynb
+   |   |-- arena.json
+   |   |-- video_gen.ipynb
+   |   |-- yang_props.json
+   |   |-- ying_props.json
+   |-- OLD METHOD
+   |   |-- analysis.ipynb
+   |-- Thin-Trails_ORCO
+   |   |-- 20hr-wingless-orco-tt
+   |   |   |-- analysis.ipynb
+   |   |   |-- arena.json
+   |   |   |-- big_ring_props.json
+   |   |   |-- small_ring_props.json
+   |   |-- 20hr-wingless-orcoctrl-tt
+   |   |   |-- analysis-archived-2.ipynb
+   |   |   |-- analysis-archived.ipynb
+   |   |   |-- analysis.ipynb
+   |   |   |-- arena.json
+   |   |   |-- big_ring_props.json
+   |   |   |-- small_ring_props.json
+   |-- archived
+   |   |-- 20hr-wingless-orcoctrl-yy-BADTRACKING
+   |   |   |-- analysis.ipynb
+   |   |   |-- arena.json
+   |   |   |-- video_gen.ipynb
+   |   |   |-- yang_props.json
+   |   |   |-- ying_props.json
+   |-- process_bands.ipynb
+   |-- process_thin_trails.ipynb
+   |-- process_ying-yang-oc.ipynb
+   |-- simulation
+   |   |-- analysis.ipynb
+   |   |-- simulation.ipynb
+   |   |-- test.ipynb
+configs
+   |-- archived_configs
+   |   |-- rig_config_20240416120834.json
+   |   |-- rig_config_20240419111528.json
+   |-- rig_config.json
+data
+   |-- .gitkeep
+experiments
+   |-- dual_band
+   |   |-- config.py
+   |   |-- experiment_logic.py
+   |-- dual_trail
+   |   |-- config.py
+   |   |-- experiment_logic.py
+   |-- multi_trail_ece
+   |   |-- config.py
+   |   |-- experiment_logic.py
+   |-- multi_trail_mov
+   |   |-- config.py
+   |   |-- experiment_logic.py
+   |-- ortho_circle
+   |   |-- config.py
+   |   |-- experiment_logic.py
+   |-- patches
+   |   |-- config.py
+   |   |-- experiment_logic.py
+   |-- random_flash
+   |   |-- config.py
+   |   |-- experiment_logic.py
+   |-- trail_test
+   |   |-- config.py
+   |   |-- experiment_logic.py
+   |-- yin_yang
+   |   |-- config.py
+   |   |-- experiment_logic.py
+   |-- yy_oc
+   |   |-- config.py
+   |   |-- experiment_logic.py
+flyprojection
+   |-- __init__.py
+   |-- config.py
+   |-- controllers
+   |   |-- __init__.py
+   |   |-- camera.py
+   |-- experiment_logic.py
+   |-- main.py
+   |-- rdp_client.py
+   |-- reanalysis.py
+   |-- rig-reconfig.py
+   |-- utils.py
+   |-- webapp.py
+poetry.lock
+poetry.toml
+processed_data
+   |-- .gitkeep
+project_readme.md
+push_script.sh
+pyproject.toml
+scripts
+   |-- .gitkeep
+tests
+   |-- __init__.py
+utils
+   |-- build.py
+   |-- quickstart.py
+   |-- update.py
 ```
