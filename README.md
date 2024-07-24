@@ -89,7 +89,11 @@ configuration: --enable-nonfree --enable-cuda-nvcc --enable-libnpp --extra-cflag
 ...
 ```
 
-### PART 3: Make sure Miniconda is Installed
+### PART 3: Setup Camera (Only Basler Cameras are Supported)
+
+Install the latest version of Pylon using *.deb installer from: https://www2.baslerweb.com/en/downloads/software-downloads/#type=pylonsoftware;language=all;version=all;os=linuxx8664bit;series=all;model=all
+
+### PART 4: Make sure Miniconda is Installed
 
 Install Mambaforge (a faster version of Miniconda), by running the following command:
 
@@ -97,7 +101,7 @@ Install Mambaforge (a faster version of Miniconda), by running the following com
 wget -nc https://github.com/conda-forge/miniforge/releases/latest/download/Mambaforge-Linux-x86_64.sh && bash Mambaforge-Linux-x86_64.sh -b && ~/mambaforge/bin/conda init bash
 ```
 
-### PART 4: Configure poetry to recognize the conda environment
+### PART 5: Configure poetry to recognize the conda environment
 
 ```
 poetry config virtualenvs.path $CONDA_ENV_PATH
@@ -105,7 +109,7 @@ poetry config virtualenvs.create false
 ```
 where `$CONDA_ENV_PATH` is the location of the conda envs, usually `/home/username/miniforge3/envs` but can be verified by running `conda info --envs`.
 
-### PART 5: Clone the Repository
+### PART 6: Clone the Repository
 
 Move to the directory where you want to clone the repository and run the following commands:
 
@@ -114,7 +118,7 @@ git clone https://github.com/neurorishika/FlyProjection.git
 cd FlyProjection
 ```
 
-### PART 6: Create the Conda Environment
+### PART 7: Create the Conda Environment
 
 Start by creating the conda environment that includes cudatooolkit and cudnn (cross-check with [SLEAP](https://sleap.ai/) for the latest installation instructions).
 
@@ -128,7 +132,7 @@ Activate the environment:
 conda activate flyprojection
 ```
 
-### PART 7: Install the Project Dependencies
+### PART 8: Install the Project Dependencies
 
 Install the project dependencies using poetry:
 
@@ -136,7 +140,17 @@ Install the project dependencies using poetry:
 poetry install
 ```
 
-### PART 8: Setup Camera (Only Basler Cameras are Supported)
+### PART 9: Install SLEAP
+
+Install SLEAP using pip as per the instructions at: https://sleap.ai/
+
+```
+conda activate flyprojection # make sure the conda environment is activated
+pip install sleap[pypi]==1.4.1a2 # or the latest version
+```
+
+Verify the installation by running `sleap-label` to see the GUI. Additioanlly, run `python -c "import sleap; sleap.versions()"` to see the versions of the installed packages.
+
 
 ## Project Organization
 
