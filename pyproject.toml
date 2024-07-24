@@ -6,7 +6,7 @@ authors = ["Rishika Mohanta <neurorishika@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.10,<4.0"
+python = ">=3.9,<4.0"
 pygame = "^2.5.2"
 lazy-loader = "^0.4"
 numpy = "^1.24.4"
