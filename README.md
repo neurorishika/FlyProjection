@@ -128,6 +128,16 @@ Activate the environment:
 conda activate flyprojection
 ```
 
+### PART 7: Install the Project Dependencies
+
+Install the project dependencies using poetry:
+
+```
+poetry install
+```
+
+### PART 8: Setup Camera (Only Basler Cameras are Supported)
+
 ## Project Organization
 
 The project is organized as follows:
