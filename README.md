@@ -93,6 +93,17 @@ configuration: --enable-nonfree --enable-cuda-nvcc --enable-libnpp --extra-cflag
 
 Install the latest version of Pylon using *.deb installer from: https://www2.baslerweb.com/en/downloads/software-downloads/#type=pylonsoftware;language=all;version=all;os=linuxx8664bit;series=all;model=all
 
+Remember to:
+
+sudo apt install network-manager
+sudo apt install ethtool
+
+Go to Pylon opt install and run the following commands:
+
+```
+./PylonGigEConfigurator auto-all -a "Ethernet 2"
+```
+
 ### PART 4: Make sure Miniconda is Installed
 
 Install Mambaforge (a faster version of Miniconda), by running the following command:
