@@ -1,0 +1,10 @@
+stop() takes 1 positional argument but 3 were given
+(<class 'TypeError'>, TypeError('stop() takes 1 positional argument but 3 were given'), <traceback object at 0x7ee8099acb40>)
+Traceback (most recent call last):
+  File "/tmp/ipykernel_1234662/705264848.py", line 63, in <module>
+    predictions = model.predict(image, verbose=0)
+  File "/home/rutalab/miniforge3/envs/flyprojection/lib/python3.9/site-packages/keras/utils/traceback_utils.py", line 67, in error_handler
+    raise e.with_traceback(filtered_tb) from None
+  File "/home/rutalab/miniforge3/envs/flyprojection/lib/python3.9/site-packages/tensorflow/python/framework/traceable_stack.py", line 111, in peek_objs
+    return (t_obj.obj for t_obj in reversed(self._stack))
+TypeError: stop() takes 1 positional argument but 3 were given
