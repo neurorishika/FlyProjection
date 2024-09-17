@@ -59,7 +59,7 @@ After this install the **Nvidia CUDA Toolkit**:
 ```
 sudo apt update && sudo apt upgrade
 sudo apt-get install nvidia-cuda-toolkit
-sudo apt-get install nvidia-gds (appears to be optional)
+sudo apt-get install nvidia-gds # this is optional but recommended (if it doesnt work, follow CUDA install instructions on Nvidia's Website)
 sudo reboot 
 ```
 
@@ -74,7 +74,7 @@ sudo apt-get install nvidia-cudnn
 
 Follow the instructions here: https://docs.nvidia.com/video-technologies/video-codec-sdk/12.1/ffmpeg-with-nvidia-gpu/index.html build and install ffmpeg.
 
-If there is an error with missing library path, do as follows:
+**AFTER** install, If there is an error with missing library path, do as follows:
 ```
 sudo find / -name xxxxxxxxx.so.xx # find the library path using this, say /usr/local/lib, and change it in the next command
 echo "/usr/local/lib" | sudo tee -a /etc/ld.so.conf.d/mylibs.conf; sudo ldconfig
@@ -91,14 +91,20 @@ configuration: --enable-nonfree --enable-cuda-nvcc --enable-libnpp --extra-cflag
 
 ### PART 3: Setup Camera (Only Basler Cameras are Supported)
 
-Install the latest version of Pylon using *.deb installer from: https://www2.baslerweb.com/en/downloads/software-downloads/#type=pylonsoftware;language=all;version=all;os=linuxx8664bit;series=all;model=all
+Install the latest version of Pylon using *.deb installer from: https://www2.baslerweb.com/en/downloads/software-downloads/#type=pylonsoftware;language=all;version=all;os=linuxx8664bit;series=all;model=all. **Prior to install, read all attached instructions.**
+
+Before running install run the following commands:
+```
+sudo apt install libgl1-mesa-dri libgl1-mesa-glx libxcb-xinerama0 libxcb-xinput0
+sudo chown -Rv _apt:root /var/cache/apt/archives/partial/
+sudo chmod -Rv 700 /var/cache/apt/archives/partial/
+```
 
 Remember to:
 
-sudo apt install network-manager
-sudo apt install ethtool
+sudo apt install network-manager ethtool
 
-Go to Pylon opt install and run the following commands:
+Go to Pylon opt (default:/opt/pylon/bin) install and run the following commands:
 
 ```
 ./PylonGigEConfigurator auto-all -a "Ethernet 2"
