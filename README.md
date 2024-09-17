@@ -99,8 +99,6 @@ Also get the *.deb for the MPEG4 suppplementary package: https://www2.baslerweb.
 Before running install run the following commands:
 ```
 sudo apt install libgl1-mesa-dri libgl1-mesa-glx libxcb-xinerama0 libxcb-xinput0
-sudo chown -Rv _apt:root /var/cache/apt/archives/partial/
-sudo chmod -Rv 700 /var/cache/apt/archives/partial/
 ```
 
 #### CoaXPress Cameras
