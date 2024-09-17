@@ -91,7 +91,10 @@ configuration: --enable-nonfree --enable-cuda-nvcc --enable-libnpp --extra-cflag
 
 ### PART 3: Setup Camera (Only Basler Cameras are Supported)
 
-Install the latest version of Pylon using *.deb installer from: https://www2.baslerweb.com/en/downloads/software-downloads/#type=pylonsoftware;language=all;version=all;os=linuxx8664bit;series=all;model=all. **Prior to install, read all attached instructions.**
+Install the latest version of Pylon using *.deb installer from: https://www2.baslerweb.com/en/downloads/software-downloads/#type=pylonsoftware;language=all;version=all;os=linuxx8664bit;series=all;model=all.
+Also get the *.deb for the MPEG4 suppplementary package: https://www2.baslerweb.com/en/downloads/software-downloads/#type=pylonsupplementarypackageformpeg4;language=all;version=all;os=linuxx8664bit.
+
+ **Prior to install, read all instructions from Bassler.**
 
 Before running install run the following commands:
 ```
@@ -100,9 +103,18 @@ sudo chown -Rv _apt:root /var/cache/apt/archives/partial/
 sudo chmod -Rv 700 /var/cache/apt/archives/partial/
 ```
 
-Remember to:
+#### CoaXPress Cameras
+If you have a Coaxpress Camera make sure to install the supplementary package (additional instructions might be available on the 
 
-sudo apt install network-manager ethtool
+```
+sudo apt-get install /opt/pylon/share/pylon/menable-dkms_*.deb
+```
+
+#### GigE Cameras
+
+Remember to run the following command before any camera's are connected.
+
+```sudo apt install network-manager ethtool```
 
 Go to Pylon opt (default:/opt/pylon/bin) install and run the following commands:
 
