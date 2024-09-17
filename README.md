@@ -98,7 +98,7 @@ Also get the *.deb for the MPEG4 suppplementary package: https://www2.baslerweb.
 
 Before running install run the following commands:
 ```
-sudo apt install libgl1-mesa-dri libgl1-mesa-glx libxcb-xinerama0 libxcb-xinput0
+sudo apt install libgl1-mesa-dri libgl1-mesa-glx libxcb-xinerama0 libxcb-xinput0 libxcb-cursor0
 ```
 
 #### CoaXPress Cameras
@@ -114,10 +114,17 @@ Remember to run the following command before any camera's are connected.
 
 ```sudo apt install network-manager ethtool```
 
+After camera is connected, go to network settings for the now connected ethernet adapter and set the IPv4 and IPv6 settings to "Local-Link Only".
+
 Go to Pylon opt (default:/opt/pylon/bin) install and run the following commands:
 
 ```
-./PylonGigEConfigurator auto-all -a "Ethernet 2"
+sudo ./PylonGigEConfigurator list
+```
+Use this to find out which ethernet port is connected and shows an IP. Lets say its called 'eno1'.
+
+```
+sudo ./PylonGigEConfigurator auto-all -a "eno1"
 ```
 
 ### PART 4: Make sure Miniconda is Installed
@@ -134,7 +141,7 @@ wget -nc https://github.com/conda-forge/miniforge/releases/latest/download/Mamba
 poetry config virtualenvs.path $CONDA_ENV_PATH
 poetry config virtualenvs.create false
 ```
-where `$CONDA_ENV_PATH` is the location of the conda envs, usually `/home/username/miniforge3/envs` but can be verified by running `conda info --envs`.
+where `$CONDA_ENV_PATH` is the location of the conda envs, usually `/home/username/miniforge3/envs` but can be verified by running `conda info --envs`. If the environment variable is not defined, make sure to define it and add it to ~/.bashrc first.
 
 ### PART 6: Clone the Repository
 
