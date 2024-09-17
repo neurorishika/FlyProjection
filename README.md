@@ -59,7 +59,7 @@ After this install the **Nvidia CUDA Toolkit**:
 ```
 sudo apt update && sudo apt upgrade
 sudo apt-get install nvidia-cuda-toolkit
-sudo apt-get install nvidia-gds
+sudo apt-get install nvidia-gds (appears to be optional)
 sudo reboot 
 ```
 
