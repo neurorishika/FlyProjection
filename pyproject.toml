@@ -32,6 +32,7 @@ tqdm = "^4.65.0"
 python-kasa = "^0.7.0.5"
 pyside2 = "5.13.2"
 pyqtgraph = "0.12.4"
+ipykernel = "^6.29.5"
 
 
 [tool.poetry.group.dev.dependencies]

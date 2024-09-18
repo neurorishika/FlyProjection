@@ -4,6 +4,7 @@ import pickle, threading, queue
 import numpy as np
 import time
 import os
+import signal
 
 import skvideo
 
@@ -12,16 +13,13 @@ import skvideo.io
 
 _SYSTEM = None
 
-
 class CameraError(Exception):
     """
     Exception raised when an error occurs in a camera.
     """
-
     pass
 
-
-def list_cameras():
+def list_spinnaker_cameras():
     """
     Return a list of connected Spinnaker cameras. Also initializes the PySpin `System`, if needed.
     """
@@ -99,7 +97,7 @@ class SpinnakerCamera:
             show_every_n : If not None, show every nth frame. (int)
             ffmpeg_path : Path to ffmpeg. (str)
         """
-        
+
         self.initialized = False
 
         self.record_video = record_video
@@ -115,7 +113,7 @@ class SpinnakerCamera:
         self.GAIN = GAIN
         self.GAMMA = GAMMA
 
-        cam_list = list_cameras()
+        cam_list = list_spinnaker_cameras()
         if not cam_list.GetSize():
             raise CameraError("No cameras detected.")
         if isinstance(index, int):
