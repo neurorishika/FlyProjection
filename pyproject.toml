@@ -33,6 +33,10 @@ python-kasa = "^0.7.0.5"
 pyside2 = "5.13.2"
 pyqtgraph = "0.12.4"
 ipykernel = "^6.29.5"
+redis = "^5.0.8"
+scikit-guess = "^0.0.1a0"
+flask = "^3.0.3"
+apriltag = "^0.0.16"
 
 
 [tool.poetry.group.dev.dependencies]

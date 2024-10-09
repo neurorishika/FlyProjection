@@ -5,7 +5,7 @@
 
 Author: [Rishika Mohanta](https://neurorishika.github.io/)
 
-Latest Build Date: 2024-07-23 16:37:35
+Latest Build Date: 2024-09-18 14:31:22
 
 ## About the Project
 
@@ -244,6 +244,78 @@ configs
    |-- rig_config.json
 data
    |-- .gitkeep
+deprecated
+   |-- flyprojection
+   |   |-- controllers
+   |   |   |-- camera.py
+   |-- prereqs_for_pyspin
+   |   |-- spinnaker-3.2.0.62-amd64
+   |   |   |-- README
+   |   |   |-- configure_gentl_paths.sh
+   |   |   |-- configure_spinnaker.sh
+   |   |   |-- configure_spinnaker_paths.sh
+   |   |   |-- configure_usbfs.sh
+   |   |   |-- install_spinnaker.sh
+   |   |   |-- libgentl_3.2.0.62_amd64.deb
+   |   |   |-- libspinnaker-c-dev_3.2.0.62_amd64.deb
+   |   |   |-- libspinnaker-c_3.2.0.62_amd64.deb
+   |   |   |-- libspinnaker-dev_3.2.0.62_amd64.deb
+   |   |   |-- libspinnaker_3.2.0.62_amd64.deb
+   |   |   |-- libspinvideo-c-dev_3.2.0.62_amd64.deb
+   |   |   |-- libspinvideo-c_3.2.0.62_amd64.deb
+   |   |   |-- libspinvideo-dev_3.2.0.62_amd64.deb
+   |   |   |-- libspinvideo_3.2.0.62_amd64.deb
+   |   |   |-- remove_spinnaker.sh
+   |   |   |-- spinnaker-doc_3.2.0.62_amd64.deb
+   |   |   |-- spinnaker_3.2.0.62_amd64.deb
+   |   |   |-- spinupdate-dev_3.2.0.62_amd64.deb
+   |   |   |-- spinupdate_3.2.0.62_amd64.deb
+   |   |   |-- spinview-qt-dev_3.2.0.62_amd64.deb
+   |   |   |-- spinview-qt_3.2.0.62_amd64.deb
+   |   |-- spinnaker_python-3.2.0.62-cp310-cp310-linux_x86_64
+   |   |   |-- Examples
+   |   |   |   |-- Python3
+   |   |   |   |   |-- AcquireAndDisplay.py
+   |   |   |   |   |-- Acquisition.py
+   |   |   |   |   |-- AcquisitionMultipleCamera.py
+   |   |   |   |   |-- BufferHandling.py
+   |   |   |   |   |-- ChunkData.py
+   |   |   |   |   |-- CounterAndTimer.py
+   |   |   |   |   |-- DeviceEvents.py
+   |   |   |   |   |-- Enumeration.py
+   |   |   |   |   |-- EnumerationEvents.py
+   |   |   |   |   |-- Enumeration_QuickSpin.py
+   |   |   |   |   |-- Exposure_QuickSpin.py
+   |   |   |   |   |-- FileAccess_QuickSpin.py
+   |   |   |   |   |-- ImageChannelStatistics.py
+   |   |   |   |   |-- ImageEvents.py
+   |   |   |   |   |-- ImageFormatControl.py
+   |   |   |   |   |-- ImageFormatControl_QuickSpin.py
+   |   |   |   |   |-- Inference.py
+   |   |   |   |   |-- Injected_Image_Classification.raw
+   |   |   |   |   |-- Injected_Image_Classification_Daisy.jpg
+   |   |   |   |   |-- Injected_Image_Detection.raw
+   |   |   |   |   |-- Injected_Image_Detection_Aeroplane.jpg
+   |   |   |   |   |-- Logging.py
+   |   |   |   |   |-- LookupTable.py
+   |   |   |   |   |-- Network_Classification
+   |   |   |   |   |-- Network_Detection
+   |   |   |   |   |-- NodeMapCallback.py
+   |   |   |   |   |-- NodeMapInfo.py
+   |   |   |   |   |-- NodeMapInfo_QuickSpin.py
+   |   |   |   |   |-- SaveToAvi.py
+   |   |   |   |   |-- Sequencer.py
+   |   |   |   |   |-- SpinUpdate.py
+   |   |   |   |   |-- Trigger.py
+   |   |   |   |   |-- Trigger_QuickSpin.py
+   |   |   |-- README.txt
+   |   |   |-- docs
+   |   |   |   |-- FLIR Camera Getting Started.html
+   |   |   |   |-- PySpinDoc.pdf
+   |   |   |-- licenses
+   |   |   |   |-- FFmpeg_compliance_doc.txt
+   |   |   |   |-- Spinnaker-Open-Source-Licenses.pdf
+   |   |   |-- spinnaker_python-3.2.0.62-cp310-cp310-linux_x86_64.whl
 experiments
    |-- dual_band
    |   |-- config.py
@@ -277,28 +349,40 @@ experiments
    |   |-- experiment_logic.py
 flyprojection
    |-- __init__.py
+   |-- app
+   |   |-- webapp.py
    |-- config.py
    |-- controllers
    |   |-- __init__.py
+   |   |-- basler_camera.py
    |   |-- camera.py
+   |   |-- spinnaker_camera.py
    |-- experiment_logic.py
    |-- main.py
-   |-- rdp_client.py
    |-- reanalysis.py
    |-- rig-reconfig.py
    |-- utils.py
-   |-- webapp.py
+   |-- utils
+   |   |-- rdp_client.py
 poetry.lock
 poetry.toml
 processed_data
    |-- .gitkeep
-project_readme.md
 push_script.sh
 pyproject.toml
 scripts
    |-- .gitkeep
 tests
+   |-- GUItest.py
    |-- __init__.py
+   |-- basler_camera.py
+   |-- camera_test.ipynb
+   |-- configurationeventprinter.py
+   |-- error.txt
+   |-- fps.npy
+   |-- gpu_test.ipynb
+   |-- imageeventprinter.py
+   |-- spinnaker_camera.py
 utils
    |-- build.py
    |-- quickstart.py

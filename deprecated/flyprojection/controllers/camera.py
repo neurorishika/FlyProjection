@@ -99,7 +99,7 @@ class SpinnakerCamera:
             show_every_n : If not None, show every nth frame. (int)
             ffmpeg_path : Path to ffmpeg. (str)
         """
-
+        
         self.initialized = False
 
         self.record_video = record_video

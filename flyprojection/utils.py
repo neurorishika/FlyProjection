@@ -1,3 +1,6 @@
+import importlib.util
+import os
+
 def hex_to_rgb(value):
     """Convert hex color to RGB."""
     value = value.lstrip('#')
@@ -27,6 +30,27 @@ def get_boolean_answer(prompt, default=None):
         else:
             print("Invalid answer. Please try again.")
             continue
+
+def get_predefined_answer(prompt, options, default=None):
+    """Get a predefined answer from the user. Defaults if no answer is given."""
+    while True:
+        answer = input(prompt).lower()
+        if answer == '':
+            return default
+        elif answer in options:
+            return answer
+        else:
+            print("Invalid answer. Please try again.")
+            continue
+
+
+def load_module_from_path(module_name, file_path):
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None:
+        raise ImportError(f"Could not load spec for '{module_name}' at '{file_path}'")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 from scipy.optimize import minimize
 import numpy as np

@@ -7,8 +7,6 @@ import os
 import signal
 
 import skvideo
-
-skvideo.setFFmpegPath("/usr/local/bin/")
 import skvideo.io
 
 def video_writer(save_queue, writer, debug=False, fps=10):
@@ -18,15 +16,16 @@ def video_writer(save_queue, writer, debug=False, fps=10):
     image_counter = 0
     while True:
         image = save_queue.get()
-        if debug:
-            if image_counter % 10*fps == 0:
-                print(f"Writing frame {image_counter}", end="\r")
         if image is None:
             break
         else:
             image_counter += 1
             writer.writeFrame(image)
             save_queue.task_done()
+
+        if debug:
+            if image_counter % 10*fps == 0:
+                print(f"Writing frame {image_counter}", end="\r")
     return
 
 camera_max_fps = {
@@ -65,12 +64,12 @@ class BaslerCamera:
     def __init__(
         self,
         index=0,
-        FPS=32,
-        EXPOSURE_TIME=15000,
-        GAIN=20,
+        FPS=100,
+        EXPOSURE_TIME=7000,
+        GAIN=0,
         WIDTH=2048,
         HEIGHT=2048,
-        OFFSETX=0,
+        OFFSETX=264,
         OFFSETY=0,
         TRIGGER_MODE="Continuous",
         CAMERA_FORMAT="Mono8",
@@ -219,12 +218,13 @@ class BaslerCamera:
         self.TSFREQ = self.cam.GevTimestampTickFrequency.GetValue()
 
         if self.record_video:
+            print("Setting up video recording...")
             self.timestamps = []
             # save as lossless video at 10 fps
             self.writer = skvideo.io.FFmpegWriter(
                 os.path.join(self.video_output_path, self.video_output_name + ".mp4"),
-                inputdict={"-r": str(self.FPS)},
-                outputdict={"-r": str(self.FPS), "-c:v": "libx264", "-crf": "0"} if self.lossless else {"-r": str(self.FPS), "-c:v": "libx264"},
+                # inputdict={"-r": str(self.FPS)},
+                #outputdict={"-r": str(self.FPS), "-c:v": "libx264", "-crf": "0"} if self.lossless else {"-r": str(self.FPS), "-c:v": "libx264"},
             )
             self.save_queue = queue.Queue()
             self.save_thread = threading.Thread(target=video_writer, args=(self.save_queue, self.writer, self.debug, self.FPS))
@@ -273,7 +273,10 @@ class BaslerCamera:
         if self.running:
             self.cam.StopGrabbing()
             if self.record_video:
+                # stop the thread
+                self.save_queue.put(None)
                 self.save_queue.join()
+                self.save_thread.join()
                 self.writer.close()
                 with open( os.path.join(self.video_output_path, self.video_output_name + "_timestamps.pkl"), "wb") as f:
                     pickle.dump(self.timestamps, f)
@@ -331,9 +334,10 @@ class BaslerCamera:
         if crop_bounds is not None:
             assert len(crop_bounds) == 4, "crop_bounds must be a list of 4 integers"
             x_min, x_max, y_min, y_max = crop_bounds
-            arr = arr[y_min:y_max, x_min:x_max].copy()
+            arr = arr[y_min:y_max, x_min:x_max]
         
         if mask is not None:
+            mask = mask.astype(dtype)[y_min:y_max, x_min:x_max]
             assert mask.shape == arr.shape, "mask must have the same shape as the image"
             assert mask.dtype == np.uint8 if self.CAMERA_FORMAT == "Mono8" else np.uint16, "mask must be a binary image"
             arr = arr * mask
