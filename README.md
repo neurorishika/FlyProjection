@@ -168,6 +168,12 @@ conda activate flyprojection
 
 ### PART 8: Install the Project Dependencies
 
+First, make sure cairo is installed:
+
+```
+sudo apt-get install libcairo2-dev
+```
+
 Install the project dependencies using poetry:
 
 ```

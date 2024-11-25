@@ -5,6 +5,7 @@ import numpy as np
 import time
 import os
 import signal
+import torch
 
 import skvideo
 import skvideo.io
@@ -65,11 +66,11 @@ class BaslerCamera:
         self,
         index=0,
         FPS=100,
-        EXPOSURE_TIME=7000,
+        EXPOSURE_TIME=9000,
         GAIN=0,
         WIDTH=2048,
         HEIGHT=2048,
-        OFFSETX=264,
+        OFFSETX=224,
         OFFSETY=0,
         TRIGGER_MODE="Continuous",
         CAMERA_FORMAT="Mono8",
@@ -345,5 +346,49 @@ class BaslerCamera:
         if self.record_video and not dont_save:
             self.timestamps.append((time, img.TimeStamp/self.TSFREQ))
             self.save_queue.put(arr)
+
+        return arr
+    
+    def get_tensor(self, timeout=1000, dont_save=False, crop_bounds=None, mask=None):
+        """
+        Get an image from the camera and convert it to a PyTorch tensor.
+
+        Variables:
+            timeout : Timeout in milliseconds. (int)
+            dont_save : Skip saving the data
+            crop_bounds : Crop the image before saving (list of ints: [x_min, x_max, y_min, y_max])
+            mask : Mask to apply to the image (numpy.ndarray)
+
+        Returns:
+            image : Image from the camera (torch.Tensor) on GPU if available
+        """
+        img, time_stamp = self.get_raw_image(timeout)
+
+        dtype = torch.uint8 if self.CAMERA_FORMAT == "Mono8" else torch.uint16
+        arr = torch.tensor(img.Array, dtype=dtype)
+
+        if crop_bounds is not None:
+            assert len(crop_bounds) == 4, "crop_bounds must be a list of 4 integers"
+            x_min, x_max, y_min, y_max = crop_bounds
+            arr = arr[y_min:y_max, x_min:x_max]
+
+        if mask is not None:
+            mask = torch.tensor(mask.astype(dtype)[y_min:y_max, x_min:x_max], dtype=dtype)
+            assert mask.shape == arr.shape, "mask must have the same shape as the image"
+            arr = arr * mask
+
+        if self.record_video and not dont_save:
+            self.timestamps.append((time_stamp, img.TimeStamp / self.TSFREQ))
+            self.save_queue.put(arr.cpu())
+
+        # Normalize to [0, 1]
+        arr = arr.float() / 255.0 if self.CAMERA_FORMAT == "Mono8" else arr.float() / 65535.0
+
+        # Add batch and channel dimensions
+        arr = arr.unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, H, W]
+
+        # Move to GPU if available
+        if torch.cuda.is_available():
+            arr = arr.cuda()
 
         return arr

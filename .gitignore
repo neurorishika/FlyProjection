@@ -182,7 +182,11 @@ processed_data/**/*
 # except for the .gitkeep file
 !processed_data/.gitkeep
 
-
+# ignore files in config folder and subfolders
+configs/*
+configs/**/*
+# except for the .gitkeep file
+!configs/.gitkeep
 
 
 

@@ -63,6 +63,9 @@ if __name__ == "__main__":
     parser.add_argument('--repo_dir', type=str, default='/mnt/sda1/Rishika/FlyProjection/', help='Path to the repository directory')
     parser.add_argument('--display_wait_time', type=int, default=500, help='Time to wait before closing the display window (in ms)')
     parser.add_argument('--homography_iterations', type=int, default=10, help='Number of iterations to find the homography between the camera and projector detections')
+    parser.add_argument('--conservative_saving', type=bool, default=False, help='Whether to save the rig configuration after each step of the calibration process')
+    parser.add_argument('--verify_map', type=bool, default=False, help='Whether to verify the map before using it')
+    parser.add_argument('--interpolation_method', type=str, default='cubic', help='Interpolation method to use for the calibration process')
 
     # parse the arguments
     args = parser.parse_args()
@@ -118,6 +121,63 @@ if __name__ == "__main__":
         FPS = int(input("Enter the FPS: "))
     rig_config['FPS'] = FPS
 
+    # ask if the camera size should be changed
+    if get_boolean_answer(f"Do you want to use the current camera width and height ({rig_config['camera_width']}x{rig_config['camera_height']} with offset {rig_config['camera_offset_x']}, {rig_config['camera_offset_y']})? [Y/n] ", default=True):
+        camera_width = int(rig_config['camera_width'])
+        camera_height = int(rig_config['camera_height'])
+        camera_offset_x = int(rig_config['camera_offset_x'])
+        camera_offset_y = int(rig_config['camera_offset_y'])
+    else:
+        while True:
+            try:
+                camera_width = int(input("Enter the camera width: "))
+                camera_height = int(input("Enter the camera height: "))
+                camera_offset_x = int(input("Enter the camera offset x: "))
+                camera_offset_y = int(input("Enter the camera offset y: "))
+                if camera_width <= 0 or camera_height <= 0 or camera_offset_x < 0 or camera_offset_y < 0:
+                    raise ValueError("Width and height must be positive and offset must be non-negative.")
+                break
+            except ValueError as e:
+                print(e)
+                continue
+    rig_config['camera_width'] = camera_width
+    rig_config['camera_height'] = camera_height
+
+    # save the rig configuration if conservative saving is enabled
+    if args.conservative_saving:
+        with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+            json.dump(rig_config, f, indent=4)
+    
+    # ask if calibration and experiment exposure times should be changed
+    if get_boolean_answer(f"Do you want to use the current calibration exposure time ({rig_config['calibration_exposure_time']})? [Y/n] ", default=True):
+        calibration_exposure_time = int(rig_config['calibration_exposure_time'])
+    else:
+        while True:
+            try:
+                calibration_exposure_time = int(input("Enter the calibration exposure time (in microseconds): "))
+                if calibration_exposure_time <= 0:
+                    raise ValueError("Exposure time must be positive.")
+                break
+            except ValueError as e:
+                print(e)
+                continue
+    rig_config['calibration_exposure_time'] = calibration_exposure_time
+
+    if get_boolean_answer(f"Do you want to use the current experiment exposure time ({rig_config['experiment_exposure_time']})? [Y/n] ", default=True):
+        experiment_exposure_time = int(rig_config['experiment_exposure_time'])
+    else:
+        while True:
+            try:
+                experiment_exposure_time = int(input("Enter the experiment exposure time (in microseconds): "))
+                if experiment_exposure_time <= 0:
+                    raise ValueError("Exposure time must be positive.")
+                break
+            except ValueError as e:
+                print(e)
+                continue
+    rig_config['experiment_exposure_time'] = experiment_exposure_time
+
+
     # Setup display and initialize Pygame
     os.environ['SDL_VIDEO_WINDOW_POS'] = f"0,0"
     pygame.init()
@@ -126,7 +186,16 @@ if __name__ == "__main__":
 
 
     # take a picture
-    with BaslerCamera(index=camera_index, FPS=FPS, record_video=False, EXPOSURE_TIME=2000) as cam:
+    with BaslerCamera(
+        index=camera_index, 
+        FPS=FPS, 
+        WIDTH=camera_width,
+        HEIGHT=camera_height,
+        OFFSETX=camera_offset_x,
+        OFFSETY=camera_offset_y,
+        EXPOSURE_TIME=calibration_exposure_time,
+        record_video=False) as cam:
+
         cam.start()
 
         #### CALIBRATION STEP 1: FIND THE ARENA IN THE PROJECTOR SPACE ####
@@ -264,8 +333,9 @@ if __name__ == "__main__":
             rig_config['projector_space_arena_radius'] = projector_space_radius
 
             # save the rig configuration
-            with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
-                json.dump(rig_config, f, indent=4)
+            if args.conservative_saving:
+                with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+                    json.dump(rig_config, f, indent=4)
 
         projector_space_radius = rig_config['projector_space_arena_radius']
         projector_space_center = np.array(rig_config['projector_space_arena_center'])
@@ -365,8 +435,9 @@ if __name__ == "__main__":
         rig_config['camera_space_arena_radius'] = camera_space_arena_radius
 
         # save the rig configuration
-        with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
-            json.dump(rig_config, f, indent=4)
+        if args.conservative_saving:
+            with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+                json.dump(rig_config, f, indent=4)
 
 
         # ask the user for the degree of detail in this step of the calibration process (4-20)
@@ -392,8 +463,9 @@ if __name__ == "__main__":
         rig_config['calibration_detail'] = detail
 
         # save the rig configuration
-        with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
-            json.dump(rig_config, f, indent=4)
+        if args.conservative_saving:
+            with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+                json.dump(rig_config, f, indent=4)
 
 
         # check if projection_space_detail_markers and projector_space_detail_markers are present in the rig_config and flag_for_calibration is False
@@ -465,8 +537,9 @@ if __name__ == "__main__":
         rig_config['projector_space_detail_markers'] = projector_space_detail_markers.tolist()
 
         # save the rig configuration
-        with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
-            json.dump(rig_config, f, indent=4)
+        if args.conservative_saving:
+            with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+                json.dump(rig_config, f, indent=4)
 
         # get a camera image
         camera_image = cam.get_array(dont_save=True)
@@ -506,8 +579,9 @@ if __name__ == "__main__":
         rig_config['fitted_projector_space_detail_markers'] = fitted_projector_space_detail_markers.tolist()
 
         # save the rig configuration
-        with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
-            json.dump(rig_config, f, indent=4)
+        if args.conservative_saving:
+            with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+                json.dump(rig_config, f, indent=4)
 
 
         interpolated_projection_space_detail_markers = []
@@ -550,7 +624,7 @@ if __name__ == "__main__":
 
         # draw the markers on the screen
         cv2.namedWindow("Interpolated Markers on the Camera Image", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Interpolated Markers on the Camera Image", 1300, 1300)
+        cv2.resizeWindow("Interpolated Markers on the Camera Image", 800, 800)
         for marker in interpolated_projection_space_detail_markers:
             cv2.circle(camera_image, tuple(np.int32(marker)), 2, (255, 255, 255), -1)
         cv2.imshow("Interpolated Markers on the Camera Image", camera_image)
@@ -604,6 +678,8 @@ if __name__ == "__main__":
             _, image_array = cv2.threshold(image_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
             # show the image
+            cv2.namedWindow("Camera Image", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("Camera Image", 800, 800)
             cv2.imshow("Camera Image", image_array)
             cv2.waitKey(args.display_wait_time)
             cv2.destroyWindow("Camera Image")
@@ -673,7 +749,7 @@ if __name__ == "__main__":
 
 
         # calculate the size of each square in the calibration pattern
-        N_squares = 13
+        N_squares = 20
         square_size = 2*insquare_halfside/N_squares
 
         # draw the calibration pattern on the screen
@@ -727,7 +803,7 @@ if __name__ == "__main__":
 
         # display the screen image with the chessboard corners
         cv2.namedWindow("Screen Image with Chessboard Corners", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Screen Image with Chessboard Corners", 1300, 1300)
+        cv2.resizeWindow("Screen Image with Chessboard Corners", 800, 800)
         cv2.imshow("Screen Image with Chessboard Corners", screen_image)
         cv2.waitKey(args.display_wait_time)
         cv2.destroyWindow("Screen Image with Chessboard Corners")
@@ -775,7 +851,7 @@ if __name__ == "__main__":
 
         # display the camera image with the projected corners
         cv2.namedWindow("Camera Image with Projected Chessboard Corners", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Camera Image with Projected Chessboard Corners", 1300, 1300)
+        cv2.resizeWindow("Camera Image with Projected Chessboard Corners", 800, 800)
         cv2.imshow("Camera Image with Projected Chessboard Corners", camera_image)
         cv2.waitKey(args.display_wait_time)
         cv2.destroyWindow("Camera Image with Projected Chessboard Corners")
@@ -798,9 +874,72 @@ if __name__ == "__main__":
         rig_config['H_projector_distortion_corrected'] = H_projector_distortion_corrected.tolist()
         rig_config['distortion_corrected_projection_space_detail_markers'] = distortion_corrected_projection_space_detail_markers.tolist()
 
+        # Create and cache the maps for remapping for:
+        # 1. H_refined from Camera to Projector
+        # 2. H_projector_distortion_corrected from Projector to Distortion Corrected Projector (homography method)
+        # 3. H_projector_distortion_corrected from Projector to Distortion Corrected Projector (distortion method)
+
+        # create the maps for remapping
+        # 1. H_refined from Camera to Projector
+
+        # get every pixel in the camera image
+        h, w = camera_height, camera_width
+        y, x = np.mgrid[0:w, 0:h]
+        yx = np.array([x.ravel(), y.ravel()]).T
+
+        # remap the camera image with H_refined
+        print("Transforming the camera coordinates to projector coordinates...")
+        remapped_camera_points = cv2.perspectiveTransform(yx.reshape(-1, 1, 2).astype(np.float32), H_refined)[:,0,:]
+
+        # create the map for remapping
+        print("Generating the map for remapping...")
+        H_refined_mapx, H_refined_mapy = generate_grid_map(image_size=(projector_height, projector_width), from_points=remapped_camera_points, to_points=yx, input_size=(camera_height, camera_width), method=args.interpolation_method)
+
+        print("Map generated.")
+
+        # save the H_refined_map
+        rig_config['H_refined_mapx'] = H_refined_mapx.tolist()
+        rig_config['H_refined_mapy'] = H_refined_mapy.tolist()
+
+        # 2. H_projector_distortion_corrected from Projector to Distortion Corrected Projector (homography method)
+
+        # get every pixel in the projector image
+        h, w = projector_height, projector_width
+        y, x = np.mgrid[0:h, 0:w]
+        yx = np.array([x.ravel(), y.ravel()]).T
+
+        # remap the projector image with H_projector_distortion_corrected
+        print("Transforming the projector coordinates to distortion corrected projector coordinates...")
+        remapped_projector_image = cv2.perspectiveTransform(yx.reshape(-1, 1, 2).astype(np.float32), H_projector_distortion_corrected)[:,0,:]
+
+        # create the map for remapping
+        print("Generating the map for remapping...")
+        H_projector_distortion_corrected_homography_mapx, H_projector_distortion_corrected_homography_mapy = generate_grid_map(image_size=(projector_height, projector_width), from_points=remapped_projector_image, to_points=yx, input_size=(projector_height, projector_width), method=args.interpolation_method)
+
+        print("Map generated.")
+
+        # save the H_projector_distortion_corrected_map
+        rig_config['H_projector_distortion_corrected_homography_mapx'] = H_projector_distortion_corrected_homography_mapx.tolist()
+        rig_config['H_projector_distortion_corrected_homography_mapy'] = H_projector_distortion_corrected_homography_mapy.tolist()
+
+        # 3. H_projector_distortion_corrected from Projector to Distortion Corrected Projector (distortion method)
+
+        # use the point we have already found interpolated_projector_space_detail_markers to distortion_corrected_projection_space_detail_markers to create the map
+        print("Transforming the projector coordinates to distortion corrected projector coordinates using the distortion method...")
+        
+        print("Generating the map for remapping...")
+        H_projector_distortion_corrected_distortion_mapx, H_projector_distortion_corrected_distortion_mapy = generate_grid_map(image_size=(projector_height, projector_width), from_points=interpolated_projector_space_detail_markers, to_points=distortion_corrected_projection_space_detail_markers, input_size=(projector_height, projector_width), method=args.interpolation_method)
+
+        print("Map generated.")
+        # save the H_projector_distortion_corrected_map
+        rig_config['H_projector_distortion_corrected_distortion_mapx'] = H_projector_distortion_corrected_distortion_mapx.tolist()
+        rig_config['H_projector_distortion_corrected_distortion_mapy'] = H_projector_distortion_corrected_distortion_mapy.tolist()
+
         # save the rig configuration
-        with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
-            json.dump(rig_config, f, indent=4)
+        if args.conservative_saving:
+            with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+                json.dump(rig_config, f, indent=4)
+
 
         ### TESTING THE CALIBRATION ###
 
@@ -834,11 +973,40 @@ if __name__ == "__main__":
         screen_image = pygame.surfarray.array3d(screen).copy().transpose((1, 0, 2))
 
         # remap the screen image with homography
-        screen_image_homography = cv2.warpPerspective(screen_image, H_projector_distortion_corrected, (projector_width, projector_height))
+        screen_image_homography = remap_image_with_map(screen_image, H_projector_distortion_corrected_homography_mapx, H_projector_distortion_corrected_homography_mapy)
+
+        # compare to using warpPerspective
+        screen_image_homography_warp = cv2.warpPerspective(screen_image, H_projector_distortion_corrected, (projector_width, projector_height))
+
+        # display the homography corrected image and the warpPerspective corrected image and the difference in opencv
+        if args.verify_map:
+            cv2.namedWindow("Homography Corrected vs WarpPerspective Corrected", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("Homography Corrected vs WarpPerspective Corrected", 1300, 650)
+            diff = np.abs(screen_image_homography - screen_image_homography_warp)
+            diff = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX) # normalize the difference
+            stack = np.hstack([screen_image_homography, screen_image_homography_warp, diff])
+            cv2.imshow("Homography Corrected vs WarpPerspective Corrected", stack)
+            cv2.waitKey(0)
+            cv2.destroyWindow("Homography Corrected vs WarpPerspective Corrected")
 
         # remap the screen image with interpolation
-        screen_image_distortion = remap_image_with_interpolation(screen_image, interpolated_projector_space_detail_markers, distortion_corrected_projection_space_detail_markers, (projector_height, projector_width))
+        screen_image_distortion = remap_image_with_map(screen_image, H_projector_distortion_corrected_distortion_mapx, H_projector_distortion_corrected_distortion_mapy)
 
+        # compare to using remap_image_with_interpolation
+        screen_image_distortion_interp = remap_image_with_interpolation(screen_image, interpolated_projector_space_detail_markers, distortion_corrected_projection_space_detail_markers, (projector_height, projector_width), method=args.interpolation_method)
+
+        # display the distortion corrected image and the difference in opencv
+        if args.verify_map:
+            cv2.namedWindow("Distortion Corrected", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("Distortion Corrected", 1300, 650)
+            diff = np.abs(screen_image_distortion - screen_image_distortion_interp)
+            diff = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX) # normalize the difference
+            stack = np.hstack([screen_image_distortion, screen_image_distortion_interp, diff])
+            cv2.imshow("Distortion Corrected", stack)
+            cv2.waitKey(0)
+            cv2.destroyWindow("Distortion Corrected")
+        
+        
         ## TEST AND SHOW THE DIFFERENCE BETWEEN THE TWO METHODS ##
 
         # display the homography corrected image
@@ -883,8 +1051,9 @@ if __name__ == "__main__":
         rig_config['projector_correction_method'] = projector_correction_method
 
         # save the rig configuration
-        with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
-            json.dump(rig_config, f, indent=4)
+        if args.conservative_saving:
+            with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+                json.dump(rig_config, f, indent=4)
 
         # draw the corrected radial grid
         print("Drawing the corrected radial grid...")
@@ -912,11 +1081,57 @@ if __name__ == "__main__":
 
 
         # project the camera image onto the screen
-        projected_camera_image = cv2.warpPerspective(camera_image_processed, H_refined, (projector_width, projector_height))
+        projected_camera_image = remap_image_with_map(camera_image_processed, H_refined_mapx, H_refined_mapy)
 
-        # apply the projector correction methods
-        projected_camera_image_corrected_homography = cv2.warpPerspective(projected_camera_image, H_projector_distortion_corrected, (projector_width, projector_height))
-        projected_camera_image_corrected_distortion = remap_image_with_interpolation(projected_camera_image, interpolated_projector_space_detail_markers, distortion_corrected_projection_space_detail_markers, (projector_height, projector_width))
+        # compare to using warpPerspective
+        projected_camera_image_warp = cv2.warpPerspective(camera_image_processed, H_refined, (projector_width, projector_height))
+
+        # display the homography corrected image and the warpPerspective corrected image and the difference in opencv
+        if args.verify_map:
+            cv2.namedWindow("Homography Corrected vs WarpPerspective Corrected", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("Homography Corrected vs WarpPerspective Corrected", 1300, 650)
+            diff = np.abs(projected_camera_image - projected_camera_image_warp)
+            diff = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX) # normalize the difference
+            stack = np.hstack([projected_camera_image, projected_camera_image_warp, diff])
+            cv2.imshow("Homography Corrected vs WarpPerspective Corrected", stack)
+            cv2.waitKey(0)
+            cv2.destroyWindow("Homography Corrected vs WarpPerspective Corrected")
+
+
+        # apply the projector correction method (homography)
+        projected_camera_image_corrected_homography = remap_image_with_map(projected_camera_image, H_projector_distortion_corrected_homography_mapx, H_projector_distortion_corrected_homography_mapy)
+        # compare to using warpPerspective
+        projected_camera_image_corrected_homography_warp = cv2.warpPerspective(projected_camera_image, H_projector_distortion_corrected, (projector_width, projector_height))
+
+        # display the homography corrected image and the warpPerspective corrected image and the difference in opencv
+        if args.verify_map:
+            cv2.namedWindow("Homography Corrected vs WarpPerspective Corrected", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("Homography Corrected vs WarpPerspective Corrected", 1300, 650)
+            diff = np.abs(projected_camera_image_corrected_homography - projected_camera_image_corrected_homography_warp)
+            diff = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX) # normalize the difference
+            stack = np.hstack([projected_camera_image_corrected_homography, projected_camera_image_corrected_homography_warp, diff])
+            cv2.imshow("Homography Corrected vs WarpPerspective Corrected", stack)
+            cv2.waitKey(0)
+            cv2.destroyWindow("Homography Corrected vs WarpPerspective Corrected")
+
+        # apply the projector correction method (distortion)
+        projected_camera_image_corrected_distortion = remap_image_with_map(projected_camera_image, H_projector_distortion_corrected_distortion_mapx, H_projector_distortion_corrected_distortion_mapy)
+        # compare to using remap_image_with_interpolation
+        projected_camera_image_corrected_distortion_interp = remap_image_with_interpolation(projected_camera_image, interpolated_projector_space_detail_markers, distortion_corrected_projection_space_detail_markers, (projector_height, projector_width), method=args.interpolation_method)
+
+        # display the distortion corrected image and the difference in opencv
+        if args.verify_map:
+            cv2.namedWindow("Distortion Corrected", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("Distortion Corrected", 1300, 650)
+            diff = np.abs(projected_camera_image_corrected_distortion - projected_camera_image_corrected_distortion_interp)
+            diff = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX) # normalize the difference
+            stack = np.hstack([projected_camera_image_corrected_distortion, projected_camera_image_corrected_distortion_interp, diff])
+            cv2.imshow("Distortion Corrected", stack)
+            cv2.waitKey(0)
+            cv2.destroyWindow("Distortion Corrected")
+
+
+
 
         # make the projected camera image grayscale -> RGB for display
         projected_camera_image = cv2.cvtColor(projected_camera_image, cv2.COLOR_BGR2RGB)
@@ -987,8 +1202,9 @@ if __name__ == "__main__":
         rig_config['camera_correction_method'] = camera_correction_method
 
         # save the rig configuration
-        with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
-            json.dump(rig_config, f, indent=4)
+        if args.conservative_saving:
+            with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+                json.dump(rig_config, f, indent=4)
 
         # get the final corrected image
         if projector_correction_method == 'homography':
@@ -1033,28 +1249,28 @@ if __name__ == "__main__":
             camera_space_arena_center_y = int(camera_space_arena_center[1])
             x = int(camera_space_arena_center[0] + camera_space_arena_radius*np.cos(np.radians(i)))
             y = int(camera_space_arena_center[1] + camera_space_arena_radius*np.sin(np.radians(i)))
-            cv2.line(camera_image, (camera_space_arena_center_x, camera_space_arena_center_y), (x, y), (255, 255, 255), 2)
+            cv2.line(camera_image, (camera_space_arena_center_x, camera_space_arena_center_y), (x, y), (255, 255, 255), 10)
 
         # draw concentric circles
         for i in range(1, 6):
             camera_space_arena_center_x = int(camera_space_arena_center[0])
             camera_space_arena_center_y = int(camera_space_arena_center[1])
-            cv2.circle(camera_image, (camera_space_arena_center_x, camera_space_arena_center_y), int(i*camera_space_arena_radius/5), (255, 255, 255), 2)
+            cv2.circle(camera_image, (camera_space_arena_center_x, camera_space_arena_center_y), int(i*camera_space_arena_radius/5), (255, 255, 255), 10)
 
         # display the camera image with the radial grid
         cv2.namedWindow("Camera Image with Radial Grid", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Camera Image with Radial Grid", 1300, 1300)
+        cv2.resizeWindow("Camera Image with Radial Grid", 800, 800)
         cv2.imshow("Camera Image with Radial Grid", camera_image)
         cv2.waitKey(args.display_wait_time)
         cv2.destroyWindow("Camera Image with Radial Grid")
 
         # project the camera image onto the screen
-        projected_camera_image = cv2.warpPerspective(camera_image, H_refined, (projector_width, projector_height))
+        projected_camera_image = remap_image_with_map(camera_image, H_refined_mapx, H_refined_mapy)
         # apply the camera correction methods
         if camera_correction_method == 'homography':
-            projected_camera_image_corrected = cv2.warpPerspective(projected_camera_image, H_projector_distortion_corrected, (projector_width, projector_height))
+            projected_camera_image_corrected = remap_image_with_map(projected_camera_image, H_projector_distortion_corrected_homography_mapx, H_projector_distortion_corrected_homography_mapy)
         elif camera_correction_method == 'distortion':
-            projected_camera_image_corrected = remap_image_with_interpolation(projected_camera_image, interpolated_projector_space_detail_markers, distortion_corrected_projection_space_detail_markers, (projector_height, projector_width))
+            projected_camera_image_corrected = remap_image_with_map(projected_camera_image, H_projector_distortion_corrected_distortion_mapx, H_projector_distortion_corrected_distortion_mapy)
         elif camera_correction_method == 'none':
             projected_camera_image_corrected = projected_camera_image
 
@@ -1070,7 +1286,17 @@ if __name__ == "__main__":
         # take a camera image
         time.sleep(1)
         projected_camera_image = cam.get_array(dont_save=True)
+
+        # apply the clahe and thresholding
+        camera_image = cv2.cvtColor(camera_image, cv2.COLOR_BGR2GRAY)
+        camera_image = clahe.apply(camera_image)
+        _, camera_image = cv2.threshold(camera_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        projected_camera_image = clahe.apply(projected_camera_image)
+        _, projected_camera_image = cv2.threshold(projected_camera_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
         # convert for comparison
+        camera_image = cv2.cvtColor(camera_image, cv2.COLOR_RGB2BGR)
         projected_camera_image = cv2.cvtColor(projected_camera_image, cv2.COLOR_RGB2BGR)        
 
         # display the corrected projected camera image along with the camera image and the difference
@@ -1079,6 +1305,8 @@ if __name__ == "__main__":
         diff = np.abs(projected_camera_image - camera_image)
         # apply morphological operations to remove noise
         diff = cv2.morphologyEx(diff, cv2.MORPH_OPEN, kernel)
+        # normalize the difference
+        diff = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX)
         image_stack = np.hstack([camera_image, projected_camera_image, diff])
         # put the name on the images
         cv2.putText(image_stack, "Camera Image", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
@@ -1087,6 +1315,10 @@ if __name__ == "__main__":
         cv2.imshow("Projected Camera Image", image_stack)
         cv2.waitKey(0)
         cv2.destroyWindow("Projected Camera Image")
+
+        # save the rig configuration
+        with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+            json.dump(rig_config, f, indent=4)
 
         # Clean up and exit
         pygame.quit()

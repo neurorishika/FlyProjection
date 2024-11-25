@@ -37,6 +37,8 @@ redis = "^5.0.8"
 scikit-guess = "^0.0.1a0"
 flask = "^3.0.3"
 apriltag = "^0.0.16"
+pycairo = "^1.27.0"
+kornia = "^0.7.4"
 
 
 [tool.poetry.group.dev.dependencies]
