@@ -5,7 +5,8 @@ import numpy as np
 import pygame
 import cairo
 import cv2
-from flyprojection.utils import *
+from flyprojection.utils.transforms import remap_image_with_interpolation, remap_coords_with_interpolation, remap_image_with_map, remap_coords_with_map
+from flyprojection.utils.utils import numpy_to_tensor, tensor_to_numpy
 import time
 
 # Import torch and kornia if available
@@ -20,13 +21,52 @@ except ImportError:
 class Artist:
     def __init__(self, camera, rig_config, method='classic', fps=200):
         """
-        Initializes the Artist class.
+        Initialize the Artist class responsible for rendering geometry defined in camera space 
+        onto a projector window after applying a series of transformations and corrections.
+        
+        The class supports multiple transformation methods ('classic', 'kornia', 'map') for 
+        converting from camera coordinates to projector coordinates and applies corrections 
+        such as distortion or homography transformations.
 
-        Parameters:
-        - camera: The camera object.
-        - rig_config: Path to the rig_config.json file or the rig_config dictionary.
-        - method: The method to use for transformations ('classic', 'kornia', 'map').
-        - fps: The frame rate for the display window.
+        Parameters
+        ----------
+        camera : object
+            The camera object with attributes WIDTH and HEIGHT representing the camera resolution.
+        rig_config : str or dict
+            The path to the rig_config.json file or a dictionary representing the rig configuration.
+            The rig_config should contain:
+             - 'projector_width': int
+             - 'projector_height': int
+             - 'H_refined': list (2D)
+             - 'H_projector_distortion_corrected': list (2D)
+             - 'projector_correction_method': str ('distortion', 'homography', 'none')
+             - 'camera_correction_method': str ('none')
+             - If using 'distortion' correction method:
+                 'interpolated_projector_space_detail_markers': list (2D)
+                 'distortion_corrected_projection_space_detail_markers': list (2D)
+             - If using 'map':
+                 'H_refined_mapx': list (2D)
+                 'H_refined_mapy': list (2D)
+                 'H_refined_inv_mapx': list (2D)
+                 'H_refined_inv_mapy': list (2D)
+                 And similar sets for 'H_projector_distortion_corrected_*_mapx',
+                 'H_projector_distortion_corrected_*_mapy',
+                 'H_projector_distortion_corrected_*_inv_mapx', 
+                 'H_projector_distortion_corrected_*_inv_mapy' depending on the correction method.
+        method : str, optional
+            The method to use for transformations. One of ('classic', 'kornia', 'map').
+            - 'classic': Uses OpenCV warpPerspective for transformations.
+            - 'kornia': Uses Kornia + PyTorch for GPU-accelerated transformations.
+            - 'map': Uses precomputed remap maps (forward and inverse).
+        fps : int, optional
+            The frame rate for the display window updates.
+
+        Raises
+        ------
+        ValueError
+            If an invalid rig_config is provided or if the method is not recognized.
+        ImportError
+            If 'kornia' method is chosen but PyTorch and Kornia are not available.
         """
         self.camera = camera
         self.method = method.lower()
@@ -36,10 +76,10 @@ class Artist:
         if isinstance(rig_config, dict):
             self.rig_config = rig_config
         elif isinstance(rig_config, str):
-            with open(rig_config_path, 'r') as f:
+            with open(rig_config, 'r') as f:
                 self.rig_config = json.load(f)
         else:
-            raise ValueError("Invalid rig_config. Provide a path to the rig_config.json file or the rig_config dictionary.")
+            raise ValueError("Invalid rig_config. Provide a path to rig_config.json or a dictionary.")
 
         # Extract necessary parameters from rig_config
         self.projector_width = self.rig_config['projector_width']
@@ -47,7 +87,7 @@ class Artist:
         self.camera_width = self.camera.WIDTH
         self.camera_height = self.camera.HEIGHT
 
-        # Load the camera to projector transformation matrices
+        # Load the camera-to-projector transformation matrices
         self.H_refined = np.array(self.rig_config['H_refined'])
         self.H_projector_distortion_corrected = np.array(self.rig_config['H_projector_distortion_corrected'])
         self.projector_correction_method = self.rig_config.get('projector_correction_method', 'distortion')
@@ -62,56 +102,64 @@ class Artist:
                 self.rig_config['distortion_corrected_projection_space_detail_markers']
             )
 
-        # Initialize Pygame
+        # Initialize Pygame and set up the display window
         os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
         pygame.init()
-
-        # Set up the display window
         self.screen = pygame.display.set_mode(
             (self.projector_width, self.projector_height),
             pygame.NOFRAME | pygame.HWSURFACE | pygame.DOUBLEBUF
         )
 
-        # Store the last image displayed
+        # Store the last displayed image
         self.last_image = None
 
-        # Prepare a Cairo surface for drawing in camera space
+        # Prepare a Cairo surface and context for drawing in camera space
         self.camera_surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.camera_width, self.camera_height)
         self.camera_context = cairo.Context(self.camera_surface)
 
-        # Prepare the clock for frame rate control
+        # Prepare a clock to control the display's frame rate
         self.clock = pygame.time.Clock()
 
         # Set up method-specific configurations
         if self.method == 'kornia':
             if torch is None or kornia is None:
                 raise ImportError("PyTorch and Kornia are required for the 'kornia' method.")
-            # Set up device for PyTorch
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-            # Precompute transformation matrices for Kornia
+            # Precompute tensors for transformation
             self.H_refined_tensor = torch.tensor(self.H_refined, dtype=torch.float32, device=self.device)
             self.H_projector_distortion_corrected_tensor = torch.tensor(
                 self.H_projector_distortion_corrected, dtype=torch.float32, device=self.device
             )
             if self.projector_correction_method == 'distortion':
-                # Convert control points to tensors
                 self.X = torch.tensor(
-                    self.distortion_corrected_projection_space_detail_markers, dtype=torch.float32, device=self.device
+                    self.distortion_corrected_projection_space_detail_markers,
+                    dtype=torch.float32, device=self.device
                 )
                 self.Y = torch.tensor(
-                    self.interpolated_projector_space_detail_markers, dtype=torch.float32, device=self.device
+                    self.interpolated_projector_space_detail_markers,
+                    dtype=torch.float32, device=self.device
                 )
         elif self.method == 'map':
-            # Load the precomputed remap maps
+            # Load the precomputed forward and inverse remap maps for camera-to-projector transformation
             self.H_refined_mapx = np.array(self.rig_config['H_refined_mapx'], dtype=np.float32)
             self.H_refined_mapy = np.array(self.rig_config['H_refined_mapy'], dtype=np.float32)
+            self.H_refined_inv_mapx = np.array(self.rig_config['H_refined_inv_mapx'], dtype=np.float32)
+            self.H_refined_inv_mapy = np.array(self.rig_config['H_refined_inv_mapy'], dtype=np.float32)
+
+            # Load projector correction maps depending on the chosen correction method
             if self.projector_correction_method == 'homography':
                 self.H_projector_distortion_corrected_mapx = np.array(
                     self.rig_config['H_projector_distortion_corrected_homography_mapx'], dtype=np.float32
                 )
                 self.H_projector_distortion_corrected_mapy = np.array(
                     self.rig_config['H_projector_distortion_corrected_homography_mapy'], dtype=np.float32
+                )
+                self.H_projector_distortion_corrected_inv_mapx = np.array(
+                    self.rig_config['H_projector_distortion_corrected_homography_inv_mapx'], dtype=np.float32
+                )
+                self.H_projector_distortion_corrected_inv_mapy = np.array(
+                    self.rig_config['H_projector_distortion_corrected_homography_inv_mapy'], dtype=np.float32
                 )
             elif self.projector_correction_method == 'distortion':
                 self.H_projector_distortion_corrected_mapx = np.array(
@@ -120,18 +168,50 @@ class Artist:
                 self.H_projector_distortion_corrected_mapy = np.array(
                     self.rig_config['H_projector_distortion_corrected_distortion_mapy'], dtype=np.float32
                 )
+                self.H_projector_distortion_corrected_inv_mapx = np.array(
+                    self.rig_config['H_projector_distortion_corrected_distortion_inv_mapx'], dtype=np.float32
+                )
+                self.H_projector_distortion_corrected_inv_mapy = np.array(
+                    self.rig_config['H_projector_distortion_corrected_distortion_inv_mapy'], dtype=np.float32
+                )
         elif self.method == 'classic':
-            # No additional setup needed for classic method
+            # No additional setup needed for the classic method
             pass
         else:
             raise ValueError("Invalid method. Choose from 'classic', 'kornia', or 'map'.")
 
-    def draw_geometry(self, drawing_function, debug=False):
+    def draw_geometry(self, drawing_function, debug=False, return_camera_image=False, return_projector_image=False):
         """
-        Draws geometry in camera space using the provided drawing function.
+        Draw geometry onto the camera surface, transform it into the projector space, 
+        and display it on the projector window.
+        
+        This method:
+        1. Clears the camera surface.
+        2. Calls the provided `drawing_function` to draw onto the camera_context (in camera space).
+        3. Extracts the drawn image as a numpy array (camera_image_rgb).
+        4. Transforms the camera image into projector space using the specified method.
+        5. Updates the projector display window with the transformed image.
 
-        Parameters:
-        - drawing_function: A function that takes a Cairo context as input and draws on it.
+        Parameters
+        ----------
+        drawing_function : callable
+            A function that accepts a Cairo context and draws geometry onto it.
+        debug : bool, optional
+            If True, prints out timing information for each step.
+        return_camera_image : bool, optional
+            If True, returns the camera space image as a numpy array.
+        return_projector_image : bool, optional
+            If True, returns the projector space image as a numpy array.
+
+        Returns
+        -------
+        camera_image_rgb : numpy.ndarray, optional
+            The camera space image if `return_camera_image` is True.
+        projector_image : numpy.ndarray, optional
+            The projector space image if `return_projector_image` is True.
+            Returns both if both are True.
+        None
+            If neither return_camera_image nor return_projector_image is True.
         """
         if debug:
             time_cairo_drawing = 0
@@ -146,62 +226,77 @@ class Artist:
         self.camera_context.paint()
         self.camera_context.restore()
 
-        # Call the drawing function
+        # Draw using the provided drawing_function
         drawing_function(self.camera_context)
         if debug:
             time_cairo_drawing += time.time() - start
 
-        # Get the image data from the camera surface
+        # Convert the drawn Cairo surface to a numpy array (camera space image)
         if debug:
             start_conversion = time.time()
         camera_image = np.frombuffer(self.camera_surface.get_data(), np.uint8)
         camera_image.shape = (self.camera_height, self.camera_surface.get_stride() // 4, 4)
+        # Extract RGB channels and flip BGR to RGB
         camera_image_rgb = camera_image[:, :self.camera_width, 2::-1]
         if debug:
             time_data_conversion += time.time() - start_conversion
 
-        # Apply the camera to projector transformation
+        # Transform the camera image into projector space
         if debug:
             start_transform = time.time()
         if self.method == 'kornia':
             projector_image = self.transform_camera_to_projector_kornia(camera_image_rgb)
         elif self.method == 'map':
             projector_image = self.transform_camera_to_projector_map(camera_image_rgb)
-        else:  # 'classic'
+        else:  # classic method
             projector_image = self.transform_camera_to_projector_classic(camera_image_rgb)
         if debug:
             time_transform += time.time() - start_transform
 
-        # Update the pygame display
+        # Update the pygame display with the transformed (projector space) image
         if debug:
             start_display = time.time()
         self.update_display(projector_image)
         if debug:
             time_display_update += time.time() - start_display
 
-        # Store the last image
+        # Store the last image for future reference
         self.last_image = projector_image
 
+        # Print debugging information if requested
         if debug:
             print(f"Time Cairo drawing: {time_cairo_drawing:.6f} s")
             print(f"Time data conversion: {time_data_conversion:.6f} s")
             print(f"Time transform: {time_transform:.6f} s")
             print(f"Time display update: {time_display_update:.6f} s")
 
+        # Return requested images
+        if return_camera_image and return_projector_image:
+            return camera_image_rgb, projector_image
+        elif return_camera_image:
+            return camera_image_rgb
+        elif return_projector_image:
+            return projector_image
+        else:
+            return None
+
     def update_display(self, image=None):
         """
-        Updates the pygame display with the provided image.
+        Update the pygame display with the provided image or the last displayed image.
 
-        Parameters:
-        - image: The image to display. If None, uses the last image.
+        Parameters
+        ----------
+        image : numpy.ndarray, optional
+            The image to display on the projector window. If None, the last displayed image 
+            will be reused. The array shape should match (projector_height, projector_width, 3).
         """
         if image is None and self.last_image is not None:
             image = self.last_image
         elif image is None:
-            # Nothing to display
+            # No image to display
             return
 
-        # Convert image to pygame surface
+        # Convert the numpy image to a Pygame surface
         pygame_surface = pygame.surfarray.make_surface(image.swapaxes(0, 1))
 
         # Blit the surface onto the screen
@@ -210,7 +305,7 @@ class Artist:
         # Update the display
         pygame.display.flip()
 
-        # Handle events to keep the window responsive
+        # Process Pygame events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
@@ -219,32 +314,84 @@ class Artist:
         # Limit the frame rate
         self.clock.tick(self.fps)
 
+    def get_screen_value_at(self, x, y):
+        """
+        Retrieve the value (color) of the projector screen at a given pixel coordinate.
+
+        Parameters
+        ----------
+        x : int or float
+            The x-coordinate on the projector screen.
+        y : int or float
+            The y-coordinate on the projector screen.
+
+        Returns
+        -------
+        tuple
+            A tuple (R, G, B, A) representing the color at the specified screen coordinates.
+        """
+        return self.screen.get_at((int(x), int(y)))
+
+    def get_values_at_camera_coords(self, coords):
+        """
+        Given a list of coordinates in camera space, transform them into projector space 
+        and retrieve the screen values at those positions.
+
+        Parameters
+        ----------
+        coords : list of tuples
+            A list of (x, y) coordinates in camera space.
+
+        Returns
+        -------
+        values : list of tuples
+            A list of (R, G, B, A) values for each corresponding transformed coordinate in projector space.
+        """
+        # Transform camera coords to projector coords depending on the chosen method
+        if self.method == 'kornia':
+            projector_coords = self.transform_coords_to_projector_kornia(coords)
+        elif self.method == 'map':
+            projector_coords = self.transform_coords_to_projector_map(coords)
+        else:  # classic method
+            projector_coords = self.transform_coords_to_projector_classic(coords)
+
+        # Retrieve the screen values at the transformed projector coordinates
+        values = []
+        for coord in projector_coords:
+            values.append(self.get_screen_value_at(*coord))
+
+        return values
+
     def transform_camera_to_projector_classic(self, camera_image):
         """
-        Transforms an image from camera space to projector space using OpenCV (classic method).
+        Transform the camera image to projector space using OpenCV warpPerspective and 
+        apply the specified projector correction method (homography or distortion).
 
-        Parameters:
-        - camera_image: The image in camera space.
+        Parameters
+        ----------
+        camera_image : numpy.ndarray
+            The camera space image as a numpy array (H x W x 3).
 
-        Returns:
-        - projector_image: The transformed image in projector space.
+        Returns
+        -------
+        corrected_projector_image : numpy.ndarray
+            The transformed projector space image after all corrections.
         """
-        # Apply the refined homography to get the image in projection space
+        # Warp from camera to projection space
         projection_space_image = cv2.warpPerspective(
             camera_image,
             self.H_refined,
             (self.projector_width, self.projector_height)
         )
 
+        # Apply projector corrections
         if self.projector_correction_method == 'homography':
-            # Apply the projector distortion correction homography
             corrected_projector_image = cv2.warpPerspective(
                 projection_space_image,
                 self.H_projector_distortion_corrected,
                 (self.projector_width, self.projector_height)
             )
         elif self.projector_correction_method == 'distortion':
-            # Apply the distortion correction mapping
             corrected_projector_image = remap_image_with_interpolation(
                 projection_space_image,
                 self.distortion_corrected_projection_space_detail_markers,
@@ -252,25 +399,69 @@ class Artist:
                 (self.projector_height, self.projector_width)
             )
         else:
-            # No correction
             corrected_projector_image = projection_space_image
 
         return corrected_projector_image
 
+    def transform_coords_to_projector_classic(self, coords):
+        """
+        Transform a list of coordinates from camera space to projector space using OpenCV perspectiveTransform.
+        Applies any required correction (homography or distortion) to the coordinates.
+
+        Parameters
+        ----------
+        coords : list of tuples
+            List of (x, y) coordinates in camera space.
+
+        Returns
+        -------
+        corrected_projector_coords : numpy.ndarray
+            The coordinates transformed into projector space after correction.
+        """
+        coords = np.array(coords, dtype=np.float32)
+
+        # Transform coordinates to projection space
+        projection_space_coords = cv2.perspectiveTransform(
+            coords.reshape(1, -1, 2),
+            self.H_refined
+        ).reshape(-1, 2)
+
+        # Apply projector corrections
+        if self.projector_correction_method == 'homography':
+            corrected_projector_coords = cv2.perspectiveTransform(
+                projection_space_coords.reshape(1, -1, 2),
+                self.H_projector_distortion_corrected
+            ).reshape(-1, 2)
+        elif self.projector_correction_method == 'distortion':
+            corrected_projector_coords = remap_coords_with_interpolation(
+                projection_space_coords,
+                self.distortion_corrected_projection_space_detail_markers,
+                self.interpolated_projector_space_detail_markers
+            )
+        else:
+            corrected_projector_coords = projection_space_coords
+
+        return corrected_projector_coords
+
     def transform_camera_to_projector_kornia(self, camera_image):
         """
-        Transforms an image from camera space to projector space using Kornia (HWAccel).
+        Transform the camera image to projector space using Kornia and PyTorch. 
+        If distortion correction is used, a post-processing step is applied.
 
-        Parameters:
-        - camera_image: The image in camera space.
+        Parameters
+        ----------
+        camera_image : numpy.ndarray
+            The camera space image (H x W x 3).
 
-        Returns:
-        - projector_image: The transformed image in projector space.
+        Returns
+        -------
+        corrected_projector_image : numpy.ndarray
+            The transformed projector space image after Kornia transformations and corrections.
         """
-        # Convert camera_image to tensor
+        # Convert camera image to torch tensor
         camera_image_tensor = numpy_to_tensor(camera_image)
 
-        # Apply the refined homography to get the image in projection space
+        # Warp from camera to projection space using Kornia
         projection_space_image_tensor = kornia.geometry.transform.warp_perspective(
             camera_image_tensor,
             self.H_refined_tensor.unsqueeze(0),
@@ -278,8 +469,8 @@ class Artist:
             align_corners=True
         )
 
+        # Apply projector corrections
         if self.projector_correction_method == 'homography':
-            # Apply the projector distortion correction homography
             corrected_projector_image_tensor = kornia.geometry.transform.warp_perspective(
                 projection_space_image_tensor,
                 self.H_projector_distortion_corrected_tensor.unsqueeze(0),
@@ -287,9 +478,7 @@ class Artist:
             )
             corrected_projector_image = tensor_to_numpy(corrected_projector_image_tensor)
         elif self.projector_correction_method == 'distortion':
-            # Convert to numpy array
             projection_space_image = tensor_to_numpy(projection_space_image_tensor)
-            # Apply the distortion correction mapping
             corrected_projector_image = remap_image_with_interpolation(
                 projection_space_image,
                 self.distortion_corrected_projection_space_detail_markers,
@@ -297,56 +486,155 @@ class Artist:
                 (self.projector_height, self.projector_width)
             )
         else:
-            # No correction
             corrected_projector_image = tensor_to_numpy(projection_space_image_tensor)
 
         return corrected_projector_image
 
+    def transform_coords_to_projector_kornia(self, coords):
+        """
+        Transform coordinates from camera space to projector space using Kornia transformations.
+        Applies projector corrections (homography or distortion) if required.
+
+        Parameters
+        ----------
+        coords : list of tuples
+            List of (x, y) coordinates in camera space.
+
+        Returns
+        -------
+        corrected_projector_coords : numpy.ndarray
+            The transformed coordinates in projector space after corrections.
+        """
+        coords_tensor = numpy_to_tensor(np.array(coords, dtype=np.float32))
+
+        # Perspective transform of coordinates from camera to projection space
+        projection_space_coords_tensor = kornia.geometry.transform.perspective_transform(
+            coords_tensor.unsqueeze(0),
+            self.H_refined_tensor.unsqueeze(0)
+        ).squeeze(0)
+
+        # Apply corrections
+        if self.projector_correction_method == 'homography':
+            corrected_projector_coords_tensor = kornia.geometry.transform.perspective_transform(
+                projection_space_coords_tensor.unsqueeze(0),
+                self.H_projector_distortion_corrected_tensor.unsqueeze(0)
+            ).squeeze(0)
+            corrected_projector_coords = tensor_to_numpy(corrected_projector_coords_tensor)
+        elif self.projector_correction_method == 'distortion':
+            projection_space_coords = tensor_to_numpy(projection_space_coords_tensor)
+            corrected_projector_coords = remap_coords_with_interpolation(
+                projection_space_coords,
+                self.distortion_corrected_projection_space_detail_markers,
+                self.interpolated_projector_space_detail_markers
+            )
+        else:
+            corrected_projector_coords = tensor_to_numpy(projection_space_coords_tensor)
+
+        return corrected_projector_coords
+
     def transform_camera_to_projector_map(self, camera_image):
         """
-        Transforms an image from camera space to projector space using map remap maps.
+        Transform the camera image to projector space using precomputed remap maps.
 
-        Parameters:
-        - camera_image: The image in camera space.
+        Parameters
+        ----------
+        camera_image : numpy.ndarray
+            The camera space image (H x W x 3).
 
-        Returns:
-        - projector_image: The transformed image in projector space.
+        Returns
+        -------
+        corrected_projector_image : numpy.ndarray
+            The projector space image after applying the forward map and then the projector correction map.
         """
-        # Apply the map remap for H_refined
-        projection_space_image = cv2.remap(
+        # First apply H_refined remap
+        projection_space_image = remap_image_with_map(
             camera_image,
             self.H_refined_mapx,
             self.H_refined_mapy,
-            interpolation=cv2.INTER_LINEAR
         )
 
-        # Apply projector correction method
-        corrected_projector_image = cv2.remap(
+        # Apply projector correction remap
+        corrected_projector_image = remap_image_with_map(
             projection_space_image,
             self.H_projector_distortion_corrected_mapx,
             self.H_projector_distortion_corrected_mapy,
-            interpolation=cv2.INTER_LINEAR
         )
 
         return corrected_projector_image
 
+    def transform_coords_to_projector_map(self, coords):
+        """
+        Transform a list of coordinates from camera space to projector space using precomputed remap maps.
+        The inverse maps are used here to find the corresponding projector coordinates.
+
+        Parameters
+        ----------
+        coords : list of tuples
+            List of (x, y) coordinates in camera space.
+
+        Returns
+        -------
+        corrected_projector_coords : numpy.ndarray
+            The transformed coordinates in projector space after corrections.
+        """
+        coords = np.array(coords, dtype=np.float32)
+
+        # Remap coordinates through inverse maps for the camera-to-projector transformation
+        projection_space_coords = remap_coords_with_map(
+            coords,
+            self.H_refined_inv_mapx,
+            self.H_refined_inv_mapy,
+        )
+
+        # Apply projector correction inverse maps
+        corrected_projector_coords = remap_coords_with_map(
+            projection_space_coords,
+            self.H_projector_distortion_corrected_inv_mapx,
+            self.H_projector_distortion_corrected_inv_mapy,
+        )
+
+        return corrected_projector_coords
+
     def keep_last_image(self):
         """
-        Keeps the last image displayed without any updates.
+        Redisplay the last transformed image without performing any new drawing or transformations.
+        This can be useful to hold the current frame on screen.
         """
         self.update_display()
 
     def close(self):
         """
-        Closes the pygame window and releases resources.
+        Close the pygame window and clean up resources.
         """
         pygame.quit()
 
+    def __enter__(self):
+        """
+        Return the instance so it can be used as a context variable
+        """
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Close the resources (like the Pygame window) when exiting the context
+        """
+        self.close()
+        print("Successfully closed pygame. Exiting Artist Context.")
 
 
 class Drawing:
     def __init__(self):
         self.instructions = []
+        self.mask = None
+
+    def add_mask(self, mask_drawing):
+        """
+        Adds a mask to the drawing.
+
+        Parameters:
+        - mask_drawing: A Drawing object representing the mask.
+        """
+        self.mask = mask_drawing
 
     def add_circle(self, center, radius, color=(0, 0, 0), line_width=1, fill=False, rotation=0):
         """
@@ -723,15 +1011,62 @@ class Drawing:
             context.restore()
         self.instructions.append(draw)
 
+    # def get_drawing_function(self):
+    #     """
+    #     Compiles all drawing instructions into a single function.
+
+    #     Returns:
+    #     - A function that takes a Cairo context and executes all drawing instructions.
+    #     """
+    #     def draw_all(context):
+    #         for instruction in self.instructions:
+    #             instruction(context)
+    #     return draw_all
+    
     def get_drawing_function(self):
         """
-        Compiles all drawing instructions into a single function.
+        Compiles all drawing instructions into a single function, applying mask if present.
 
         Returns:
         - A function that takes a Cairo context and executes all drawing instructions.
         """
         def draw_all(context):
+            width = context.get_target().get_width()
+            height = context.get_target().get_height()
+
+            # Create a surface for the main drawing
+            main_surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+            main_context = cairo.Context(main_surface)
+
+            # Draw all instructions onto the main surface
             for instruction in self.instructions:
-                instruction(context)
+                instruction(main_context)
+
+            if self.mask is not None:
+                # Create a surface for the mask
+                mask_surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+                mask_context = cairo.Context(mask_surface)
+
+                # Render the mask drawing onto the mask surface
+                mask_drawing_function = self.mask.get_drawing_function()
+                mask_drawing_function(mask_context)
+
+                # Apply the mask to the main surface
+                context.save()
+                context.set_source_surface(main_surface, 0, 0)
+                context.mask_surface(mask_surface, 0, 0)
+                context.restore()
+            else:
+                # No mask; paint the main surface directly
+                context.save()
+                context.set_source_surface(main_surface, 0, 0)
+                context.paint()
+                context.restore()
         return draw_all
+
+    def clear(self):
+        """
+        Clears all drawing instructions.
+        """
+        self.instructions = []
 

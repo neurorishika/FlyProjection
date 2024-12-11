@@ -1,22 +1,24 @@
-import os
-import sys
-import argparse
-import datetime
-import time
-import json
-import shutil
-import threading
-import multiprocessing
-from itertools import product
-import numpy as np
-import pygame
 import torch
-import kornia
+import time
+import threading
+import sys
+import shutil
+import pygame
+import os
+import numpy as np
+import multiprocessing
 import matplotlib.pyplot as plt
+import kornia
+import json
+import datetime
 import cv2
+import argparse
 import apriltag
-
-from flyprojection.utils import *
+from itertools import product
+from flyprojection.utils.utils import tensor_to_numpy, numpy_to_tensor
+from flyprojection.utils.geometry import fit_linear_curve, project_to_linear, fit_ellipse, subdivide_on_ellipse, nsphere_fit
+from flyprojection.utils.networking import validate_ip_address
+from flyprojection.utils.input import get_boolean_answer, get_predefined_answer
 from flyprojection.controllers.basler_camera import BaslerCamera, list_basler_cameras
 
 # Function to continuously display images from the queue in a separate process
@@ -78,6 +80,16 @@ if __name__ == "__main__":
     current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     shutil.copy(os.path.join(repo_dir, 'configs', 'rig_config_hwaccel.json'),
                 os.path.join(repo_dir, 'configs', 'archived_configs', f'rig_config_until_{current_time}.json'))
+
+    # ask for the IR led IP address
+    if get_boolean_answer(f"Do you want to use the default IR LED IP address ({rig_config['IR_LED_IP']})? [Y/n] ", default=True):
+        IR_LED_IP = rig_config['IR_LED_IP']
+    else:
+        IR_LED_IP = input("Enter the IP address of the IR LED: ")
+        # validate the IP address
+        assert validate_ip_address(IR_LED_IP), f"Invalid IP address: {IR_LED_IP}"
+
+    rig_config['IR_LED_IP'] = IR_LED_IP
 
     # Setup projector dimensions
     if get_boolean_answer(f"Use current projector dimensions ({rig_config['projector_width']}x{rig_config['projector_height']})? [Y/n] ", default=True):

@@ -255,6 +255,7 @@ class BaslerCamera:
         Closes the camera and cleans up using a context manager.
         """
         self.close()
+        print("Successfully closed camera. Exiting BaslerCamera Context.")
 
     def start(self):
         """

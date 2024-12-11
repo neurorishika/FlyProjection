@@ -12,28 +12,12 @@ import datetime
 import signal
 import argparse
 
-# Define the pinwheel drawing function
-def add_pinwheel(drawing, center, radius, num_spokes=20, color=(1, 0, 0), start_offset=0):
-    for i in range(num_spokes):
-        start_angle = (i * (2 * np.pi / num_spokes) + start_offset) % (2 * np.pi)
-        end_angle = ((i + 1) * (2 * np.pi / num_spokes) + start_offset) % (2 * np.pi)
-        drawing.add_arc(
-            center,
-            radius,
-            start_angle,
-            end_angle,
-            color=color if i % 2 == 0 else (0, 0, 0),
-            line_width=0,
-            fill=True,
-        )
-
-
 
 if __name__ == "__main__":
     # set up the argument parser
     parser = argparse.ArgumentParser(description='Open/Closed Loop Fly Projection System Rig Configuration')
     parser.add_argument('--repo_dir', type=str, default='/mnt/sda1/Rishika/FlyProjection/', help='Path to the repository directory')
-    parser.add_argument('--pinwheel_dimension', type=int, default=100, help='Dimension of the pinwheel')
+    parser.add_argument('--sphere_of_infuence', type=int, default=100, help='Dimension of the sphere of influence')
 
     # parse the arguments
     args = parser.parse_args()
@@ -53,11 +37,13 @@ if __name__ == "__main__":
     with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'r') as f:
         rig_config = json.load(f)
 
+    camera_space_arena_center = rig_config['camera_space_arena_center']
+    camera_space_arena_radius = rig_config['camera_space_arena_radius']
 
     # Initialize the camera
     camera = BaslerCamera(
         index=rig_config['camera_index'],
-        EXPOSURE_TIME=9000,
+        EXPOSURE_TIME=rig_config['experiment_exposure_time'],
         GAIN=0.0,
         WIDTH=rig_config['camera_width'],
         HEIGHT=rig_config['camera_height'],
@@ -75,8 +61,8 @@ if __name__ == "__main__":
     # Initialize the tracker with the camera and desired parameters
     tracker = FastTracker(
         camera=camera,
-        n_targets=5,
-        debug=False  # Set to True to see the tracking visualization
+        n_targets=2,
+        debug=True  # Set to True to see the tracking visualization
     )
 
     # Start the camera
@@ -91,16 +77,6 @@ if __name__ == "__main__":
     # Register signal handler for Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
 
-    pinwheel_dimension = min(artist.camera_width, artist.camera_height)//10
-    pinwheel_blueprint = Drawing()
-    add_pinwheel(pinwheel_blueprint, (pinwheel_dimension//2, pinwheel_dimension//2), pinwheel_dimension//2, num_spokes=20, color=(0, 0, 1), start_offset=0)
-
-    # Get or create the sprite
-    pinwheel_sprite = pinwheel_blueprint.create_sprite(
-        pinwheel_dimension,
-        pinwheel_dimension,
-        pinwheel_blueprint.get_drawing_function(),
-    )
 
     # Initialize variables for rotation
     angle = 0  # Starting angle in radians
@@ -119,15 +95,21 @@ if __name__ == "__main__":
             last_time = current_time
             times.append(delta_time)
 
+            # setup the background
+            background = Drawing()
+
+            # draw a circle around the arena
+            background.add_circle(camera_space_arena_center, camera_space_arena_radius, color=(1, 0, 0), fill=True)
+
+            mask = Drawing()
+
             estimates = tracker.process_next_frame()
 
             # Update the rotation angle
             angle += angular_speed * delta_time  # Update angle based on time elapsed
 
             start_time = time.time()
-
-            # Create a new Drawing instance
-            drawing = Drawing()
+            
 
             if estimates is not None:
                 for estimate in estimates:
@@ -137,15 +119,14 @@ if __name__ == "__main__":
                           f"Time Since Start: {estimate['time_since_start']:.2f}s")
 
                     if not np.isnan(estimate['position']).any():
-                        # draw a pinwheel sprite at the estimated position
-                        drawing.add_sprite(
-                            pinwheel_sprite,
-                            center=np.int32(estimate['position']).tolist(),
-                            rotation=angle,
-                        )
+                        # draw a circle around the target
+                        mask.add_circle(estimate['position'], args.sphere_of_infuence, color=(1, 1, 1), fill=True)
+            
+            # add the mask to the background
+            background.add_mask(mask)
 
             # Get the drawing function
-            draw_fn = drawing.get_drawing_function()
+            draw_fn = background.get_drawing_function()
 
             # Draw the geometry using Artist
             artist.draw_geometry(draw_fn, debug=False)

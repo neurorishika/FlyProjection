@@ -1,22 +1,33 @@
-from flyprojection.utils import *
+import time
+import threading
+import sys
+import shutil
 import pygame
 import os
-import sys
-import argparse
-import datetime
-import time
-import json
-import apriltag
-import cv2
-import threading
-import multiprocessing
-from itertools import product
-from flyprojection.controllers.basler_camera import BaslerCamera, list_basler_cameras
-import matplotlib.pyplot as plt
 import numpy as np
+import multiprocessing
+import matplotlib.pyplot as plt
+import json
+import datetime
+import cv2
+import argparse
+import apriltag
 from skg import nsphere_fit
-import shutil
+from itertools import product
+from flyprojection.utils.input import get_boolean_answer, get_predefined_answer
+from flyprojection.utils.networking import validate_ip_address
+from flyprojection.utils.geometry import fit_linear_curve, project_to_linear, fit_ellipse, subdivide_on_ellipse
+from flyprojection.controllers.basler_camera import BaslerCamera, list_basler_cameras
 
+# Import torch and kornia if available
+try:
+    import torch
+    import kornia
+    from flyprojection.utils.transforms import remap_image_with_interpolation
+except ImportError:
+    torch = None
+    kornia = None
+    print("Warning: PyTorch and Kornia are not installed. 'kornia' method will not be available.")
 
 # Function to continuously display images from the queue in a separate process
 def display_images(queue):
@@ -63,7 +74,7 @@ if __name__ == "__main__":
     parser.add_argument('--repo_dir', type=str, default='/mnt/sda1/Rishika/FlyProjection/', help='Path to the repository directory')
     parser.add_argument('--display_wait_time', type=int, default=500, help='Time to wait before closing the display window (in ms)')
     parser.add_argument('--homography_iterations', type=int, default=10, help='Number of iterations to find the homography between the camera and projector detections')
-    parser.add_argument('--conservative_saving', type=bool, default=False, help='Whether to save the rig configuration after each step of the calibration process')
+    parser.add_argument('--conservative_saving', type=bool, default=True, help='Whether to save the rig configuration after each step of the calibration process')
     parser.add_argument('--verify_map', type=bool, default=False, help='Whether to verify the map before using it')
     parser.add_argument('--interpolation_method', type=str, default='cubic', help='Interpolation method to use for the calibration process')
 
@@ -84,6 +95,16 @@ if __name__ == "__main__":
     # load the rig configuration
     with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'r') as f:
         rig_config = json.load(f)
+    
+    # ask for the IR led IP address
+    if get_boolean_answer(f"Do you want to use the default IR LED IP address ({rig_config['IR_LED_IP']})? [Y/n] ", default=True):
+        IR_LED_IP = rig_config['IR_LED_IP']
+    else:
+        IR_LED_IP = input("Enter the IP address of the IR LED: ")
+        # validate the IP address
+        assert validate_ip_address(IR_LED_IP), f"Invalid IP address: {IR_LED_IP}"
+
+    rig_config['IR_LED_IP'] = IR_LED_IP
 
     # ask if the width and height of the projector should be changed
     if get_boolean_answer(f"Do you want to use the current projector width and height ({rig_config['projector_width']}x{rig_config['projector_height']})? [Y/n] ", default=True):
@@ -142,6 +163,8 @@ if __name__ == "__main__":
                 continue
     rig_config['camera_width'] = camera_width
     rig_config['camera_height'] = camera_height
+    rig_config['camera_offset_x'] = camera_offset_x
+    rig_config['camera_offset_y'] = camera_offset_y
 
     # save the rig configuration if conservative saving is enabled
     if args.conservative_saving:
@@ -184,6 +207,8 @@ if __name__ == "__main__":
     clock = pygame.time.Clock()
     screen = pygame.display.set_mode((projector_width, projector_height), pygame.NOFRAME | pygame.HWSURFACE | pygame.DOUBLEBUF)
 
+    # turn off IR LED
+    os.system(f"kasa --host {IR_LED_IP} off")
 
     # take a picture
     with BaslerCamera(
@@ -901,6 +926,16 @@ if __name__ == "__main__":
         rig_config['H_refined_mapx'] = H_refined_mapx.tolist()
         rig_config['H_refined_mapy'] = H_refined_mapy.tolist()
 
+        # create the inverse map for remapping
+        print("Generating the inverse map for remapping...")
+        H_refined_inv_mapx, H_refined_inv_mapy = generate_grid_map(image_size=(camera_height, camera_width), from_points=yx, to_points=remapped_camera_points, input_size=(projector_height, projector_width), method=args.interpolation_method)
+
+        print("Inverse map generated.")
+
+        # save the H_refined_inv_map
+        rig_config['H_refined_inv_mapx'] = H_refined_inv_mapx.tolist()
+        rig_config['H_refined_inv_mapy'] = H_refined_inv_mapy.tolist()
+
         # 2. H_projector_distortion_corrected from Projector to Distortion Corrected Projector (homography method)
 
         # get every pixel in the projector image
@@ -922,6 +957,17 @@ if __name__ == "__main__":
         rig_config['H_projector_distortion_corrected_homography_mapx'] = H_projector_distortion_corrected_homography_mapx.tolist()
         rig_config['H_projector_distortion_corrected_homography_mapy'] = H_projector_distortion_corrected_homography_mapy.tolist()
 
+        # create the inverse map for remapping
+        print("Generating the inverse map for remapping...")
+
+        H_projector_distortion_corrected_homography_inv_mapx, H_projector_distortion_corrected_homography_inv_mapy = generate_grid_map(image_size=(projector_height, projector_width), from_points=yx, to_points=remapped_projector_image, input_size=(projector_height, projector_width), method=args.interpolation_method)
+
+        print("Inverse map generated.")
+
+        # save the H_projector_distortion_corrected_inv_map
+        rig_config['H_projector_distortion_corrected_homography_inv_mapx'] = H_projector_distortion_corrected_homography_inv_mapx.tolist()
+        rig_config['H_projector_distortion_corrected_homography_inv_mapy'] = H_projector_distortion_corrected_homography_inv_mapy.tolist()
+
         # 3. H_projector_distortion_corrected from Projector to Distortion Corrected Projector (distortion method)
 
         # use the point we have already found interpolated_projector_space_detail_markers to distortion_corrected_projection_space_detail_markers to create the map
@@ -934,6 +980,17 @@ if __name__ == "__main__":
         # save the H_projector_distortion_corrected_map
         rig_config['H_projector_distortion_corrected_distortion_mapx'] = H_projector_distortion_corrected_distortion_mapx.tolist()
         rig_config['H_projector_distortion_corrected_distortion_mapy'] = H_projector_distortion_corrected_distortion_mapy.tolist()
+
+        # create the inverse map for remapping
+        print("Generating the inverse map for remapping...")
+
+        H_projector_distortion_corrected_distortion_inv_mapx, H_projector_distortion_corrected_distortion_inv_mapy = generate_grid_map(image_size=(projector_height, projector_width), from_points=distortion_corrected_projection_space_detail_markers, to_points=interpolated_projector_space_detail_markers, input_size=(projector_height, projector_width), method=args.interpolation_method)
+
+        print("Inverse map generated.")
+
+        # save the H_projector_distortion_corrected_inv_map
+        rig_config['H_projector_distortion_corrected_distortion_inv_mapx'] = H_projector_distortion_corrected_distortion_inv_mapx.tolist()
+        rig_config['H_projector_distortion_corrected_distortion_inv_mapy'] = H_projector_distortion_corrected_distortion_inv_mapy.tolist()
 
         # save the rig configuration
         if args.conservative_saving:
@@ -1320,19 +1377,11 @@ if __name__ == "__main__":
         with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
             json.dump(rig_config, f, indent=4)
 
+        
+
+        # turn on IR LED
+        os.system(f"kasa --host {IR_LED_IP} on")
+
         # Clean up and exit
         pygame.quit()
         sys.exit()
-
-
-
-
-
-
-    
-
-    
-
-
-
-

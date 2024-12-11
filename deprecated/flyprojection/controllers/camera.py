@@ -206,6 +206,7 @@ class SpinnakerCamera:
         Closes the camera and cleans up using a context manager.
         """
         self.close()
+        print("Successfully closed camera. Exiting SpinnakerCamera Context.")
 
     def start(self):
         """

@@ -1,0 +1,8 @@
+site_name: FlyProjection Documentation
+site_url: https://neurorishika.github.io/FlyProjection
+
+plugins:
+  - mkdocstrings
+
+theme:
+  name: material
