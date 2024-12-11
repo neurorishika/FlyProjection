@@ -182,19 +182,12 @@ processed_data/**/*
 # except for the .gitkeep file
 !processed_data/.gitkeep
 
+# ignore files in config folder and subfolders
+configs/*
+configs/**/*
+# except for the .gitkeep file
+!configs/.gitkeep
 
 
 
-**/.DS_Store./.venv/lib/python3.10/site-packages/tensorflow/libtensorflow_framework.so.2 # LARGE FILE
-./.venv/lib/python3.10/site-packages/tensorflow/libtensorflow_cc.so.2 # LARGE FILE
-./.venv/lib/python3.10/site-packages/PySide2/Qt/lib/libQt5WebEngineCore.so.5 # LARGE FILE
-./.venv/lib/python3.10/site-packages/nvidia/cusolver/lib/libcusolver.so.11 # LARGE FILE
-./.venv/lib/python3.10/site-packages/nvidia/cufft/lib/libcufft.so.11 # LARGE FILE
-./.venv/lib/python3.10/site-packages/nvidia/cusparse/lib/libcusparse.so.12 # LARGE FILE
-./.venv/lib/python3.10/site-packages/nvidia/cublas/lib/libcublasLt.so.12 # LARGE FILE
-./.venv/lib/python3.10/site-packages/nvidia/cublas/lib/libcublas.so.12 # LARGE FILE
-./.venv/lib/python3.10/site-packages/nvidia/cudnn/lib/libcudnn_cnn_infer.so.8 # LARGE FILE
-./.venv/lib/python3.10/site-packages/nvidia/cudnn/lib/libcudnn_cnn_train.so.8 # LARGE FILE
-./.venv/lib/python3.10/site-packages/nvidia/cudnn/lib/libcudnn_adv_train.so.8 # LARGE FILE
-./.venv/lib/python3.10/site-packages/nvidia/cudnn/lib/libcudnn_adv_infer.so.8 # LARGE FILE
-./.venv/lib/python3.10/site-packages/nvidia/nccl/lib/libnccl.so.2 # LARGE FILE
+**/.DS_Store

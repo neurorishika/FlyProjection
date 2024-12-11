@@ -5,10 +5,9 @@ import numpy as np
 import time
 import os
 import signal
+import torch
 
 import skvideo
-
-skvideo.setFFmpegPath("/usr/local/bin/")
 import skvideo.io
 
 def video_writer(save_queue, writer, debug=False, fps=10):
@@ -18,15 +17,16 @@ def video_writer(save_queue, writer, debug=False, fps=10):
     image_counter = 0
     while True:
         image = save_queue.get()
-        if debug:
-            if image_counter % 10*fps == 0:
-                print(f"Writing frame {image_counter}", end="\r")
         if image is None:
             break
         else:
             image_counter += 1
             writer.writeFrame(image)
             save_queue.task_done()
+
+        if debug:
+            if image_counter % 10*fps == 0:
+                print(f"Writing frame {image_counter}", end="\r")
     return
 
 camera_max_fps = {
@@ -65,12 +65,12 @@ class BaslerCamera:
     def __init__(
         self,
         index=0,
-        FPS=32,
-        EXPOSURE_TIME=15000,
-        GAIN=20,
+        FPS=100,
+        EXPOSURE_TIME=9000,
+        GAIN=0,
         WIDTH=2048,
         HEIGHT=2048,
-        OFFSETX=0,
+        OFFSETX=224,
         OFFSETY=0,
         TRIGGER_MODE="Continuous",
         CAMERA_FORMAT="Mono8",
@@ -219,12 +219,13 @@ class BaslerCamera:
         self.TSFREQ = self.cam.GevTimestampTickFrequency.GetValue()
 
         if self.record_video:
+            print("Setting up video recording...")
             self.timestamps = []
             # save as lossless video at 10 fps
             self.writer = skvideo.io.FFmpegWriter(
                 os.path.join(self.video_output_path, self.video_output_name + ".mp4"),
-                inputdict={"-r": str(self.FPS)},
-                outputdict={"-r": str(self.FPS), "-c:v": "libx264", "-crf": "0"} if self.lossless else {"-r": str(self.FPS), "-c:v": "libx264"},
+                # inputdict={"-r": str(self.FPS)},
+                #outputdict={"-r": str(self.FPS), "-c:v": "libx264", "-crf": "0"} if self.lossless else {"-r": str(self.FPS), "-c:v": "libx264"},
             )
             self.save_queue = queue.Queue()
             self.save_thread = threading.Thread(target=video_writer, args=(self.save_queue, self.writer, self.debug, self.FPS))
@@ -254,6 +255,7 @@ class BaslerCamera:
         Closes the camera and cleans up using a context manager.
         """
         self.close()
+        print("Successfully closed camera. Exiting BaslerCamera Context.")
 
     def start(self):
         """
@@ -273,7 +275,10 @@ class BaslerCamera:
         if self.running:
             self.cam.StopGrabbing()
             if self.record_video:
+                # stop the thread
+                self.save_queue.put(None)
                 self.save_queue.join()
+                self.save_thread.join()
                 self.writer.close()
                 with open( os.path.join(self.video_output_path, self.video_output_name + "_timestamps.pkl"), "wb") as f:
                     pickle.dump(self.timestamps, f)
@@ -331,9 +336,10 @@ class BaslerCamera:
         if crop_bounds is not None:
             assert len(crop_bounds) == 4, "crop_bounds must be a list of 4 integers"
             x_min, x_max, y_min, y_max = crop_bounds
-            arr = arr[y_min:y_max, x_min:x_max].copy()
+            arr = arr[y_min:y_max, x_min:x_max]
         
         if mask is not None:
+            mask = mask.astype(dtype)[y_min:y_max, x_min:x_max]
             assert mask.shape == arr.shape, "mask must have the same shape as the image"
             assert mask.dtype == np.uint8 if self.CAMERA_FORMAT == "Mono8" else np.uint16, "mask must be a binary image"
             arr = arr * mask
@@ -341,5 +347,49 @@ class BaslerCamera:
         if self.record_video and not dont_save:
             self.timestamps.append((time, img.TimeStamp/self.TSFREQ))
             self.save_queue.put(arr)
+
+        return arr
+    
+    def get_tensor(self, timeout=1000, dont_save=False, crop_bounds=None, mask=None):
+        """
+        Get an image from the camera and convert it to a PyTorch tensor.
+
+        Variables:
+            timeout : Timeout in milliseconds. (int)
+            dont_save : Skip saving the data
+            crop_bounds : Crop the image before saving (list of ints: [x_min, x_max, y_min, y_max])
+            mask : Mask to apply to the image (numpy.ndarray)
+
+        Returns:
+            image : Image from the camera (torch.Tensor) on GPU if available
+        """
+        img, time_stamp = self.get_raw_image(timeout)
+
+        dtype = torch.uint8 if self.CAMERA_FORMAT == "Mono8" else torch.uint16
+        arr = torch.tensor(img.Array, dtype=dtype)
+
+        if crop_bounds is not None:
+            assert len(crop_bounds) == 4, "crop_bounds must be a list of 4 integers"
+            x_min, x_max, y_min, y_max = crop_bounds
+            arr = arr[y_min:y_max, x_min:x_max]
+
+        if mask is not None:
+            mask = torch.tensor(mask.astype(dtype)[y_min:y_max, x_min:x_max], dtype=dtype)
+            assert mask.shape == arr.shape, "mask must have the same shape as the image"
+            arr = arr * mask
+
+        if self.record_video and not dont_save:
+            self.timestamps.append((time_stamp, img.TimeStamp / self.TSFREQ))
+            self.save_queue.put(arr.cpu())
+
+        # Normalize to [0, 1]
+        arr = arr.float() / 255.0 if self.CAMERA_FORMAT == "Mono8" else arr.float() / 65535.0
+
+        # Add batch and channel dimensions
+        arr = arr.unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, H, W]
+
+        # Move to GPU if available
+        if torch.cuda.is_available():
+            arr = arr.cuda()
 
         return arr

@@ -1,5 +1,5 @@
 import sys
-from PySide2 import QtWidgets, QtCore, QtGui
+from PySide2 import QtWidgets, QtCore
 import pyqtgraph as pg
 
 def main():
@@ -35,22 +35,23 @@ def main():
     # Create a GraphicsLayoutWidget (from PyQtGraph)
     graphics_widget = pg.GraphicsLayoutWidget()
     graphics_widget.setBackground('k')  # Set background to black
-    
+    graphics_widget.ci.setContentsMargins(0, 0, 0, 0)  # Remove outer margins
+
     # Create a layout and add the graphics widget
     layout = QtWidgets.QVBoxLayout()
     layout.addWidget(graphics_widget)
+    layout.setContentsMargins(0, 0, 0, 0)  # Set layout margins to zero
     central_widget.setLayout(layout)
     
     # Create a plot area (ViewBox)
     view = graphics_widget.addViewBox()
     view.setAspectLocked(True)  # Lock aspect ratio
-    view.setRange(QtCore.QRectF(0, 0, geometry.width(), geometry.height()))
     view.setBackgroundColor('k')  # Set background to black
-    
+
     # Draw a circle at the center of the screen
-    circle_diameter = 200  # Diameter of the circle in pixels
+    circle_diameter = 500  # Diameter of the circle in pixels
     circle = QtWidgets.QGraphicsEllipseItem(
-        geometry.width() / 2 - circle_diameter / 2,  # x position
+        geometry.width() / 4 - circle_diameter / 2,  # x position
         geometry.height() / 2 - circle_diameter / 2,  # y position
         circle_diameter,  # width
         circle_diameter   # height
@@ -58,7 +59,10 @@ def main():
     circle.setBrush(pg.mkBrush('w'))  # Fill color white
     circle.setPen(pg.mkPen(None))     # No border
     view.addItem(circle)
-    
+
+    # Set the view range to match the geometry of the screen
+    view.setRange(QtCore.QRectF(0, 0, geometry.width(), geometry.height()))
+
     # Show the window in fullscreen mode
     window.showFullScreen()
     
@@ -73,6 +77,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-

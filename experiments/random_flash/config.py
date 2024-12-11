@@ -5,8 +5,8 @@ BOUNDARY_WIDTH = 1
 BACKGROUND_COLOR = "#000000"
 
 # TIME PARAMETERS
-PHASE_1_DURATION = 300 # in seconds
-PHASE_2_DURATION = 1500 # in seconds
+PHASE_1_DURATION = 5 # in seconds
+PHASE_2_DURATION = 10 # in seconds
 SPLIT_TIMES = [PHASE_1_DURATION]
 
 # FLASH PARAMETERS (PHASE 2)
@@ -22,4 +22,4 @@ def truncated_exponential(a, low, high):
 # FLASH_ON_DURATION = "np.random.uniform(0.1, 4)"
 FLASH_ON_DURATION = "truncated_exponential(2, 0.1, 4)"
 # python code to be executed to get the OFF duration in seconds
-FLASH_OFF_DURATION = "5" 
+FLASH_OFF_DURATION = "1" 
