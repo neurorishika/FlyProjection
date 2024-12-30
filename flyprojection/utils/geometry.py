@@ -1,44 +1,371 @@
 import numpy as np
 from scipy.optimize import minimize, shgo
 from numba import njit
+from sortedcontainers import SortedList
+import heapq
+import itertools
 
 def bounding_boxes_intersect(p1, p2):
     """
-    Check if the bounding boxes of two sets of points overlap.
-
+    Quick bounding box check. Returns False if the overall boxes do not overlap.
+    This saves time when the paths are clearly disjoint in x or y.
+    
     Parameters
     ----------
-    p1 : array_like of shape (N, 2)
-        The first set of points, where each point is (x, y).
-    p2 : array_like of shape (M, 2)
-        The second set of points, where each point is (x, y).
-
+    p1 : np.ndarray of shape (N, 2)
+        The first set of points.
+    p2 : np.ndarray of shape (M, 2)
+        The second set of points.
+    
     Returns
     -------
     bool
         True if their bounding boxes overlap, False otherwise.
-
-    Notes
-    -----
-    This function finds the minimum and maximum x and y coordinates for each set 
-    of points, forming two bounding boxes. It then checks if these boxes overlap.
-    Using Numba (njit) here provides a slight performance benefit if called frequently.
     """
-    p1 = np.array(p1)
-    p2 = np.array(p2)
-
-    # Compute bounding boxes
     min_x_1, max_x_1 = np.min(p1[:, 0]), np.max(p1[:, 0])
     min_y_1, max_y_1 = np.min(p1[:, 1]), np.max(p1[:, 1])
 
     min_x_2, max_x_2 = np.min(p2[:, 0]), np.max(p2[:, 0])
     min_y_2, max_y_2 = np.min(p2[:, 1]), np.max(p2[:, 1])
 
-    # Check overlap along x-axis and y-axis
     overlap_x = not (max_x_1 < min_x_2 or max_x_2 < min_x_1)
     overlap_y = not (max_y_1 < min_y_2 or max_y_2 < min_y_1)
-
     return overlap_x and overlap_y
+
+def orientation(p, q, r, eps=1e-14):
+    """
+    Determine the orientation of the triplet (p, q, r).
+
+    Parameters
+    ----------
+    p, q, r : tuple of float (x, y)
+        Three points.
+    eps : float
+        Tolerance for floating-point comparisons.
+
+    Returns
+    -------
+    int
+        0 if collinear,
+        1 if clockwise,
+        2 if counterclockwise.
+    """
+    val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
+    if abs(val) < eps:
+        return 0
+    return 1 if val > 0 else 2
+
+def on_segment(p, q, r, eps=1e-14):
+    """
+    Check if point q lies on the line segment pr.
+
+    Parameters
+    ----------
+    p, q, r : tuple of float (x, y)
+        Three collinear points.
+
+    Returns
+    -------
+    bool
+        True if q lies on segment pr, False otherwise.
+    """
+    if (min(p[0], r[0]) - eps <= q[0] <= max(p[0], r[0]) + eps and
+        min(p[1], r[1]) - eps <= q[1] <= max(p[1], r[1]) + eps):
+        return True
+    return False
+
+def segments_intersect(s1_start, s1_end, s2_start, s2_end, eps=1e-14):
+    """
+    Check if two line segments intersect.
+
+    Parameters
+    ----------
+    s1_start, s1_end : tuple of float (x, y)
+        Endpoints of the first segment.
+    s2_start, s2_end : tuple of float (x, y)
+        Endpoints of the second segment.
+    eps : float
+        Tolerance for floating-point comparisons.
+
+    Returns
+    -------
+    bool
+        True if the segments intersect, False otherwise.
+    """
+    o1 = orientation(s1_start, s1_end, s2_start, eps)
+    o2 = orientation(s1_start, s1_end, s2_end, eps)
+    o3 = orientation(s2_start, s2_end, s1_start, eps)
+    o4 = orientation(s2_start, s2_end, s1_end, eps)
+
+    # General case
+    if o1 != o2 and o3 != o4:
+        return True
+
+    # Special cases
+    if o1 == 0 and on_segment(s1_start, s2_start, s1_end, eps):
+        return True
+    if o2 == 0 and on_segment(s1_start, s2_end, s1_end, eps):
+        return True
+    if o3 == 0 and on_segment(s2_start, s1_start, s2_end, eps):
+        return True
+    if o4 == 0 and on_segment(s2_start, s1_end, s2_end, eps):
+        return True
+
+    return False
+
+def segment_intersection_point(s1_start, s1_end, s2_start, s2_end, eps=1e-14):
+    """
+    If the two segments properly intersect (not just endpoints), 
+    return the (x, y) intersection. Otherwise, return None.
+
+    Parameters
+    ----------
+    s1_start, s1_end : tuple of float (x, y)
+        Endpoints of the first segment.
+    s2_start, s2_end : tuple of float (x, y)
+        Endpoints of the second segment.
+    eps : float
+        Tolerance for floating-point comparisons.
+
+    Returns
+    -------
+    tuple or None
+        Intersection point as (x, y) if exists, else None.
+    """
+    # Denominator
+    denom = ((s1_end[0] - s1_start[0]) * (s2_end[1] - s2_start[1]) -
+             (s1_end[1] - s1_start[1]) * (s2_end[0] - s2_start[0]))
+    if abs(denom) < eps:
+        return None  # parallel or nearly parallel
+
+    # Compute intersection parameter t1 along segment1
+    t1 = ((s1_start[0] - s2_start[0]) * (s2_end[1] - s2_start[1]) -
+          (s1_start[1] - s2_start[1]) * (s2_end[0] - s2_start[0])) / denom
+
+    # Intersection point
+    ix = s1_start[0] + t1 * (s1_end[0] - s1_start[0])
+    iy = s1_start[1] + t1 * (s1_end[1] - s1_start[1])
+
+    # Check if it lies within both segments
+    inter_pt = (ix, iy)
+    if segments_intersect(s1_start, s1_end, s2_start, s2_end, eps):
+        return inter_pt
+    else:
+        return None
+
+class Segment:
+    """
+    Class representing a line segment.
+
+    Attributes
+    ----------
+    p1, p2 : tuple of float (x, y)
+        The endpoints of the segment. p1.x <= p2.x is ensured for consistency.
+    idx : int
+        Unique identifier for the segment.
+    """
+    __slots__ = ['p1', 'p2', 'idx']  # Optional: to reduce overhead
+
+    def __init__(self, p1, p2, idx):
+        if p2[0] < p1[0]:
+            p1, p2 = p2, p1
+        self.p1 = p1
+        self.p2 = p2
+        self.idx = idx  # Unique identifier
+
+    def y_at_x(self, x):
+        """
+        Compute the y-coordinate of the intersection of this segment
+        with a vertical line at x.
+
+        Parameters
+        ----------
+        x : float
+            The x-coordinate at which to compute y.
+
+        Returns
+        -------
+        float
+            The y-coordinate of the segment at x.
+        """
+        if abs(self.p2[0] - self.p1[0]) < 1e-14:
+            return self.p1[1]  # Vertical line, y is constant
+        t = (x - self.p1[0]) / (self.p2[0] - self.p1[0])
+        return self.p1[1] + t * (self.p2[1] - self.p1[1])
+
+# Event types
+START = 0
+END = 1
+INTS = 2
+
+def paths_intersect(p1, p2, stop_at_first=True):
+    """
+    Sweep-line algorithm (Bentley-Ottmann style) to check if two polygonal paths intersect.
+    This version includes unique identifiers to prevent comparison errors.
+
+    Parameters
+    ----------
+    p1 : np.ndarray of shape (N, 2)
+        Points of the first path.
+    p2 : np.ndarray of shape (M, 2)
+        Points of the second path.
+    stop_at_first : bool, optional
+        If True, return as soon as any intersection is found. Default is True.
+
+    Returns
+    -------
+    bool
+        True if the paths intersect, False otherwise.
+    """
+    # 1. Quick bounding box check
+    if not bounding_boxes_intersect(p1, p2):
+        return False
+
+    # 2. Initialize unique counters for segments and events
+    segment_id_counter = itertools.count()
+    event_id_counter = itertools.count()
+
+    # 3. Build the segments
+    segs = []
+    # From path 1
+    for i in range(p1.shape[0] - 1):
+        seg = Segment(tuple(p1[i]), tuple(p1[i+1]), next(segment_id_counter))
+        segs.append(seg)
+    # From path 2
+    for j in range(p2.shape[0] - 1):
+        seg = Segment(tuple(p2[j]), tuple(p2[j+1]), next(segment_id_counter))
+        segs.append(seg)
+
+    # 4. Build initial events (start and end of each segment)
+    # Each event is a tuple: (x, event_type, event_id, data)
+    # event_id ensures no comparison of 'data' occurs in heapq
+    events = []
+    for s in segs:
+        heapq.heappush(events, (s.p1[0], START, next(event_id_counter), s))
+        heapq.heappush(events, (s.p2[0], END, next(event_id_counter), s))
+
+    # 5. Initialize the active segments SortedList
+    # The key includes y_at_x and unique segment idx to prevent tie-break issues
+    active = SortedList(key=lambda seg: (round(seg.y_at_x(current_x), 14), seg.idx) if 'current_x' in locals() else (float('-inf'), seg.idx))
+
+    # 6. Define helper functions within the scope to access current_x
+    def get_active_index(segment):
+        """
+        Return the index of 'segment' in the active list, or None if not found.
+        """
+        try:
+            return active.index(segment)
+        except ValueError:
+            return None
+
+    def neighbor_segments(idx):
+        """
+        Return the immediate neighbors of active[idx] in the active list.
+        (left, right), either or both can be None if at the edges.
+        """
+        left = active[idx - 1] if idx - 1 >= 0 else None
+        right = active[idx + 1] if idx + 1 < len(active) else None
+        return left, right
+
+    def check_and_add_intersection(s1, s2, current_x):
+        """
+        Check if s1 and s2 intersect to the right of current_x.
+        If so, add an intersection event to the heap.
+        """
+        if s1 is None or s2 is None or s1 == s2:
+            return
+        # Check if segments overlap in x-range beyond current_x
+        left_x = max(s1.p1[0], s2.p1[0], current_x)
+        right_x = min(s1.p2[0], s2.p2[0])
+        if right_x < left_x:
+            return  # No overlapping x-range
+
+        # Compute intersection point
+        pt = segment_intersection_point(s1.p1, s1.p2, s2.p1, s2.p2)
+        if pt is not None:
+            ix, iy = pt
+            if ix > current_x + 1e-14:
+                # Add intersection event
+                heapq.heappush(events, (ix, INTS, next(event_id_counter), (s1, s2, pt)))
+
+    # 7. Process events
+    while events:
+        x, etype, eid, data = heapq.heappop(events)
+        current_x = x  # Update the sweep line position
+
+        # Update the key for active segments based on the new current_x
+        # Rebuild the SortedList's ordering by recreating it with updated keys
+        if 'current_x' in locals():
+            # To prevent the key function from referencing an outdated current_x,
+            # we clear and re-add segments with updated keys.
+            # Note: This is not the most efficient way, but SortedList does not support dynamic keys.
+            old_segments = list(active)
+            active.clear()
+            active.update(old_segments)
+
+        if etype == START:
+            # Insert the segment into the active set
+            s = data
+            active.add(s)
+            idx = get_active_index(s)
+            # Check for intersections with neighbors
+            left_s, right_s = neighbor_segments(idx)
+            check_and_add_intersection(left_s, s, current_x)
+            check_and_add_intersection(s, right_s, current_x)
+
+            if stop_at_first and (left_s and segments_intersect(left_s.p1, left_s.p2, s.p1, s.p2) or
+                                   right_s and segments_intersect(s.p1, s.p2, right_s.p1, right_s.p2)):
+                return True
+
+        elif etype == END:
+            # Remove the segment from the active set
+            s = data
+            idx = get_active_index(s)
+            if idx is not None:
+                left_s, right_s = neighbor_segments(idx)
+                active.remove(s)
+                # After removal, check if left and right neighbors intersect
+                if left_s and right_s:
+                    check_and_add_intersection(left_s, right_s, current_x)
+
+                    if stop_at_first and segments_intersect(left_s.p1, left_s.p2, right_s.p1, right_s.p2):
+                        return True
+
+        elif etype == INTS:
+            # Intersection event: swap the order of s1 and s2 in the active set
+            s1, s2, pt = data
+            # Check if both segments are still active
+            idx1 = get_active_index(s1)
+            idx2 = get_active_index(s2)
+            if idx1 is None or idx2 is None:
+                continue  # One or both segments have been removed
+
+            # Ensure idx1 < idx2
+            if idx1 > idx2:
+                s1, s2 = s2, s1
+                idx1, idx2 = idx2, idx1
+
+            # Swap the segments in the active set
+            active.remove(s1)
+            active.remove(s2)
+            active.add(s2)
+            active.add(s1)
+
+            # After swapping, check for new possible intersections
+            new_idx1 = active.index(s2)
+            new_idx2 = active.index(s1)
+
+            left_s, _ = neighbor_segments(new_idx1)
+            _, right_s = neighbor_segments(new_idx2)
+
+            check_and_add_intersection(left_s, s2, current_x)
+            check_and_add_intersection(s1, right_s, current_x)
+
+            if stop_at_first:
+                return True
+
+    # If all events are processed without finding an intersection
+    return False
 
 @njit
 def cartesian_to_polar(state, center):
@@ -569,3 +896,43 @@ def rect_fit(points, force_rotation=None):
     x_pos, y_pos, width, height, rotation = result.x
     rect_points = get_rectangle_points(x_pos, y_pos, width, height, rotation)
     return rect_points, result.x
+
+def resample_path(coords, n_points):
+    """
+    Resamples a timeseries of Cartesian coordinates to exactly N points.
+    
+    Parameters
+    ----------
+    coords : np.ndarray
+        An array of shape (M, 2) containing the original Cartesian coordinates,
+        where M is the number of points in the input timeseries.
+    n_points : int
+        The number of points desired in the output timeseries.
+        
+    Returns
+    -------
+    resampled_coords : np.ndarray
+        An array of shape (N, 2) containing the resampled Cartesian coordinates,
+        where N equals n_points.
+    """
+    # Compute the cumulative arc length
+    diffs = np.diff(coords, axis=0)
+    segment_lengths = np.sqrt((diffs ** 2).sum(axis=1))
+    cumulative_length = np.cumsum(segment_lengths)
+    cumulative_length = np.insert(cumulative_length, 0, 0)  # Add the starting point
+    
+    # Normalize the cumulative arc length to [0, 1]
+    total_length = cumulative_length[-1]
+    normalized_length = cumulative_length / total_length
+    
+    # Generate N evenly spaced points in [0, 1]
+    target_lengths = np.linspace(0, 1, n_points)
+    
+    # Interpolate x and y coordinates
+    x_interp = np.interp(target_lengths, normalized_length, coords[:, 0])
+    y_interp = np.interp(target_lengths, normalized_length, coords[:, 1])
+    
+    # Combine the interpolated coordinates
+    resampled_coords = np.column_stack((x_interp, y_interp))
+    
+    return resampled_coords

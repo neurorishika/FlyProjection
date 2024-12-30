@@ -9,6 +9,7 @@ import numpy as np
 import h5py
 import hdf5plugin
 import time
+import subprocess
 
 class AsyncLogger:
     """
@@ -26,7 +27,7 @@ class AsyncLogger:
     On exiting the context, the logger flushes and closes all handlers.
     """
 
-    def __init__(self, log_file, logger_name='async_logger', level=logging.INFO):
+    def __init__(self, log_file, logger_name='async_logger', level=logging.INFO, display=True):
         """
         Initialize the asynchronous logger.
 
@@ -38,6 +39,8 @@ class AsyncLogger:
             Name for the logger (non-root).
         level : int
             Logging level (e.g., logging.INFO).
+        display : bool
+            Whether to display log messages on the console.
         """
         self.log_file = log_file
         self.logger_name = logger_name
@@ -45,6 +48,7 @@ class AsyncLogger:
         self.log_queue = queue.Queue()
         self.log_thread = None
         self.logger = None
+        self.display = display
 
     def __enter__(self):
         """
@@ -113,24 +117,17 @@ class AsyncLogger:
                 print(f"Error in log listener: {e}", file=sys.stderr)
 
 
+
 class AsyncHDF5Saver:
     """
     An asynchronous HDF5 saver that writes frames (and optional metadata) to an HDF5 file using a background thread.
 
     Features:
     - Multiple datasets can be defined, each with its own shape, dtype, and compression.
-    - Exactly one of background subtraction OR difference coding may be enabled for a given dataset.
     - Can store per-frame metadata in a separate dataset.
     - Stores global metadata as HDF5 file attributes.
-    - Uses a queue and a background thread to avoid blocking the main thread.
-
-    Reconstruction Instructions:
-    - If background subtraction was used:
-        original_frame = stored_frame + background
-    - If difference coding was used:
-        original_frame_0 = stored_frame_0
-        for i in range(1, n_frames):
-            original_frame_i = original_frame_(i-1) + stored_frame_i
+    - Uses an unbounded queue and a background thread to avoid blocking the main thread.
+    - Supports advanced compression methods via hdf5plugin.
     """
 
     def __init__(
@@ -138,7 +135,7 @@ class AsyncHDF5Saver:
         h5_filename,
         datasets_config,
         metadata_config=None,
-        global_metadata=None
+        global_metadata=None,
     ):
         """
         Initialize the asynchronous HDF5 saver.
@@ -152,10 +149,7 @@ class AsyncHDF5Saver:
                 {
                     "shape": tuple,
                     "dtype": np.dtype or type,
-                    "compression": str or None,
-                    "compression_opts": int or None,
-                    "background": ndarray or None,
-                    "difference_coding": bool
+                    "compression": hdf5plugin compression object or None
                 }
         metadata_config : dict, optional
             Configuration for per-frame metadata dataset (or None if not used).
@@ -165,15 +159,6 @@ class AsyncHDF5Saver:
         self.h5_filename = h5_filename
         os.makedirs(os.path.dirname(h5_filename), exist_ok=True)
 
-        # Enforce exclusivity: cannot have both background subtraction and difference coding
-        for name, cfg in datasets_config.items():
-            background = cfg.get("background", None)
-            diff_coding = cfg.get("difference_coding", False)
-            if background is not None and diff_coding:
-                raise ValueError(
-                    f"Dataset '{name}' cannot have both difference coding and background subtraction enabled."
-                )
-
         self.datasets_config = datasets_config
         self.metadata_config = metadata_config
         self.global_metadata = global_metadata or {}
@@ -181,7 +166,7 @@ class AsyncHDF5Saver:
         self.h5_file = None
         self.datasets = {}
         self.metadata_dset = None
-        self.frame_queue = queue.Queue()
+        self.frame_queue = queue.Queue()  # Unbounded queue
         self.stop_event = threading.Event()
         self.worker_thread = None
         self.frames_written = 0
@@ -196,11 +181,10 @@ class AsyncHDF5Saver:
         for name, cfg in self.datasets_config.items():
             shape = cfg["shape"]
             dtype = cfg["dtype"]
-            comp = cfg.get("compression", None)
-            comp_opts = cfg.get("compression_opts", None)
+            compression = cfg.get("compression", None)
 
             maxshape = (None,) + shape
-            chunks = (1,) + shape
+            chunks = (1,) + shape  # Multiple frames per chunk
 
             dset = self.h5_file.create_dataset(
                 name,
@@ -208,25 +192,24 @@ class AsyncHDF5Saver:
                 maxshape=maxshape,
                 dtype=dtype,
                 chunks=chunks,
-                compression=comp,
-                compression_opts=comp_opts
+                compression=compression  # This is a hdf5plugin compression object
             )
-            cfg["prev_frame"] = None
             self.datasets[name] = dset
 
         # Create metadata dataset if needed
         if self.metadata_config is not None:
             md_dtype = self.metadata_config["dtype"]
-            md_comp = self.metadata_config.get("compression", None)
-            md_comp_opts = self.metadata_config.get("compression_opts", None)
+            compression = self.metadata_config.get("compression", None)
+
+            metadata_chunks = (1,)  # Assuming one metadata entry per frame
+
             self.metadata_dset = self.h5_file.create_dataset(
                 "metadata",
                 shape=(0,),
                 maxshape=(None,),
                 dtype=md_dtype,
-                chunks=(1,),
-                compression=md_comp,
-                compression_opts=md_comp_opts
+                chunks=metadata_chunks,
+                compression=compression  # This is a hdf5plugin compression object
             )
 
         # Store global metadata as attributes
@@ -246,66 +229,14 @@ class AsyncHDF5Saver:
         self.shutdown()
         print("Successfully closed HDF5 Saver. Exiting AsyncHDF5Saver Context.")
 
-    def _process_frame_data(self, dataset_name, frame_data):
-        """
-        Apply background subtraction OR difference coding if enabled for this dataset.
-
-        Parameters
-        ----------
-        dataset_name : str
-            Name of the dataset being processed.
-        frame_data : numpy.ndarray
-            The raw frame data as a NumPy array.
-
-        Returns
-        -------
-        numpy.ndarray
-            Processed frame data ready for storage.
-        """
-        cfg = self.datasets_config[dataset_name]
-        dtype = cfg["dtype"]
-        data = frame_data.astype(dtype, copy=False)
-
-        background = cfg.get("background", None)
-        diff_coding = cfg.get("difference_coding", False)
-
-        # If background is enabled, subtract it to store only differences from background
-        if background is not None:
-            bg = background.astype(np.int16, copy=False)
-            diff = data.astype(np.int16) - bg
-            diff = np.clip(diff, 0, np.iinfo(dtype).max).astype(dtype)
-            data = diff
-            # If this is the first frame, remember the processed frame
-            if self.frames_written == 0:
-                cfg["prev_frame"] = data.copy()
-
-        # If difference coding is enabled, store frame differences relative to previous frame
-        elif diff_coding:
-            if self.frames_written == 0:
-                # First frame stored as is
-                cfg["prev_frame"] = data.copy()
-            else:
-                prev = cfg["prev_frame"].astype(np.int16)
-                curr = data.astype(np.int16)
-                diff = (curr - prev).astype(np.int16)
-                data = diff
-                # Update prev_frame as reconstructed current frame
-                cfg["prev_frame"] = (prev + diff.astype(np.int16)).astype(dtype)
-
-        # If neither background nor difference coding is used, do nothing special
-        # Just store the frame as-is.
-
-        return data
-
     def _writer(self):
         """
         Worker thread function:
         - Continuously reads items (metadata, data_dict) from the queue.
-        - Processes each dataset's frame according to configured rules.
         - Appends frames and metadata to the HDF5 file.
         - Stops when a None item is encountered or stop_event is set.
         """
-        while not self.stop_event.is_set():
+        while not (self.stop_event.is_set() and self.frame_queue.empty()):
             try:
                 item = self.frame_queue.get(timeout=0.5)
             except queue.Empty:
@@ -319,11 +250,11 @@ class AsyncHDF5Saver:
             # Write each dataset
             for name, dset in self.datasets.items():
                 frame_data = data_dict[name]
-                processed_data = self._process_frame_data(name, frame_data)
 
                 new_size = self.frames_written + 1
+                # Resize dataset to accommodate the new frame
                 dset.resize((new_size,) + self.datasets_config[name]["shape"])
-                dset[self.frames_written] = processed_data
+                dset[self.frames_written] = frame_data
 
             # Write metadata if available
             if self.metadata_dset is not None:
@@ -354,6 +285,7 @@ class AsyncHDF5Saver:
             if name not in data_dict:
                 raise ValueError(f"Missing data for dataset '{name}' in save_frame_async call.")
 
+        # Enqueue the data without blocking
         self.frame_queue.put((metadata, data_dict))
 
     def shutdown(self):
@@ -370,3 +302,331 @@ class AsyncHDF5Saver:
         if self.h5_file is not None:
             self.h5_file.flush()
             self.h5_file.close()
+class AsyncFFmpegVideoWriter:
+    def __init__(
+        self,
+        output_file,
+        width,
+        height,
+        fps=30,
+        codec='h264_nvenc',
+        preset='p4',
+        pix_fmt_in='rgb24',
+        stop_event=None,
+        log_file=None,
+    ):
+        """
+        Initialize an asynchronous FFmpeg video writer using NVIDIA GPU acceleration.
+
+        Parameters
+        ----------
+        output_file : str
+            Output filename.
+        width : int
+            Frame width in pixels.
+        height : int
+            Frame height in pixels.
+        fps : int
+            Frames per second.
+        codec : str
+            NVENC codec (e.g., 'h264_nvenc', 'hevc_nvenc', 'av1_nvenc').
+        preset : str
+            NVENC preset (e.g., 'p4' for balanced quality/performance).
+        pix_fmt_in : str
+            Input pixel format (default 'rgb24'). Use 'gray' for grayscale frames.
+        stop_event : threading.Event
+            Optional stop event to signal the writer to stop.
+        log_file : str
+            Optional path to a file where FFmpeg logs will be written.
+        """
+        self.output_file = output_file
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.codec = codec
+        self.preset = preset
+        self.pix_fmt_in = pix_fmt_in
+        self.stop_event = threading.Event() if stop_event is None else stop_event
+        self.log_file = log_file
+
+        self.frame_queue = queue.Queue()
+        self.error_queue = queue.Queue()
+        self.process = None
+        self.writer_thread = None
+        self.stderr_thread = None
+        self.log_file_handle = None
+
+    def __enter__(self):
+        # Open log file if provided
+        if self.log_file:
+            self.log_file_handle = open(self.log_file, 'w')
+
+        # Construct FFmpeg command
+        cmd = [
+            'ffmpeg',
+            '-loglevel', 'debug',  # Suppress FFmpeg's stderr
+            '-y',  # Overwrite output files without asking
+            '-f', 'rawvideo',
+            '-pix_fmt', self.pix_fmt_in,
+            '-s', f"{self.width}x{self.height}",
+            '-r', str(self.fps),
+            '-i', 'pipe:0',  # Input comes from stdin
+            '-c:v', self.codec,
+            '-preset', self.preset,
+            self.output_file
+        ]
+
+        # Start FFmpeg subprocess
+        self.process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,  # Suppress FFmpeg's stdout
+            stderr=self.log_file_handle or subprocess.PIPE,  # Log to file if provided, else capture stderr
+            bufsize=10**7  # Large buffer to prevent blocking
+        )
+
+        # Start writer thread
+        self.writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self.writer_thread.start()
+
+        # Start stderr reading thread if no log file is used
+        if not self.log_file_handle:
+            self.stderr_thread = threading.Thread(target=self._stderr_reader, daemon=True)
+            self.stderr_thread.start()
+
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Signal stop event
+        self.stop_event.set()
+
+        # Wait for writer thread to finish processing all frames
+        self.frame_queue.put(None)  # Signal end of input
+        if self.writer_thread:
+            self.writer_thread.join()
+
+        # Wait for stderr reader to finish
+        if self.stderr_thread:
+            self.stderr_thread.join()
+
+        # Send 'q' to FFmpeg's stdin to request graceful termination
+        if self.process and self.process.stdin:
+            try:
+                self.process.stdin.write(b'q')
+                self.process.stdin.flush()
+            except Exception as e:
+                self.error_queue.put(f"Failed to send termination signal to FFmpeg: {str(e)}")
+
+        # Wait for FFmpeg to finish encoding
+        if self.process:
+            try:
+                self.process.wait(timeout=300)  # Wait up to 5 minutes
+            except subprocess.TimeoutExpired:
+                print("FFmpeg did not terminate in time. Attempting retries...")
+
+            # Retry mechanism for FFmpeg finalization
+            for _ in range(5):  # Retry up to 5 times
+                if self.process.poll() is not None:  # Process has terminated
+                    break
+                print("Retrying FFmpeg finalization...")
+                try:
+                    self.process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    continue
+
+        # Close log file if used
+        if self.log_file_handle:
+            self.log_file_handle.close()
+
+        # Ensure FFmpeg terminated successfully
+        success_detected = False
+        if self.process and self.process.returncode == 0:
+            success_detected = True
+
+        # Check error queue for critical errors
+        errors_found = False
+        while not self.error_queue.empty():
+            err = self.error_queue.get()
+            if not self.log_file_handle:
+                sys.stderr.write(f"[FFmpeg Error] {err}\n")
+            errors_found = True
+        
+        if self.process and self.process.returncode not in [0, 255]:  # Treat return code 255 as a warning
+            errors_found = True
+
+        if errors_found and not success_detected:
+            print(f"Video '{self.output_file}' saved with errors. Check logs at '{self.log_file}'.")
+        elif not errors_found and success_detected:
+            print(f"Video '{self.output_file}' saved successfully.")
+        else:
+            print(f"Video '{self.output_file}' completed with warnings. Check logs at '{self.log_file}'.")
+
+    def _writer_loop(self):
+        while True:
+            try:
+                frame = self.frame_queue.get(timeout=0.5)
+            except queue.Empty:
+                if self.stop_event.is_set() and self.frame_queue.empty():
+                    break  # Exit loop if stop event is set and queue is empty
+                continue
+
+            if frame is None:
+                break  # End of stream
+
+            # Validate and write the frame
+            if self.pix_fmt_in == 'rgb24':
+                expected_shape = (self.height, self.width, 3)
+            elif self.pix_fmt_in == 'gray':
+                expected_shape = (self.height, self.width)
+            else:
+                self.error_queue.put(f"Unsupported pix_fmt_in: {self.pix_fmt_in}.")
+                continue
+
+            if frame.shape != expected_shape:
+                self.error_queue.put(
+                    f"Frame shape mismatch: got {frame.shape}, expected {expected_shape}."
+                )
+                continue
+
+            if frame.dtype != np.uint8:
+                self.error_queue.put(f"Frame dtype mismatch: got {frame.dtype}, expected uint8.")
+                continue
+
+            try:
+                self.process.stdin.write(frame.tobytes())
+            except BrokenPipeError:
+                self.error_queue.put("BrokenPipeError: FFmpeg process may have crashed or ended.")
+                break
+
+            self.frame_queue.task_done()
+
+        # Close stdin to signal EOF to FFmpeg
+        if self.process and self.process.stdin:
+            try:
+                self.process.stdin.close()
+            except Exception as e:
+                self.error_queue.put(f"Error closing stdin: {e}")
+
+    def _stderr_reader(self):
+        for line in self.process.stderr:
+            if self.stop_event.is_set():
+                break
+            line_decoded = line.decode('utf-8', errors='replace').strip()
+            if "error" in line_decoded.lower() or "Error" in line_decoded:
+                # Log only critical errors
+                if "EOF while reading input" not in line_decoded and "PACKET SIZE" not in line_decoded:
+                    self.error_queue.put(line_decoded)
+
+    def write_frame(self, frame):
+        """
+        Enqueue a frame for writing.
+
+        Parameters
+        ----------
+        frame : np.ndarray
+            Frame data. Shape should match (height, width, 3) for 'rgb24' or (height, width) for 'gray'.
+            dtype should be uint8.
+        """
+        if not isinstance(frame, np.ndarray):
+            raise TypeError("Frame must be a numpy.ndarray.")
+        if frame.dtype != np.uint8:
+            raise TypeError("Frame dtype must be uint8.")
+        self.frame_queue.put(frame)
+
+class MultiStreamManager:
+    def __init__(self, stop_event = None):
+        self.writers = []
+        self.stop_event = stop_event
+
+    def add_stream(
+        self,
+        output_file,
+        width,
+        height,
+        fps=30,
+        codec='h264_nvenc',
+        preset='p4',
+        pix_fmt_in='rgb24',
+        log_file=None
+    ):
+        """
+        Add a video output stream configuration.
+
+        Parameters
+        ----------
+        output_file : str
+            Output filename for this video.
+        width : int
+            Frame width in pixels.
+        height : int
+            Frame height in pixels.
+        fps : int
+            Frames per second.
+        codec : str
+            NVENC codec (e.g., 'h264_nvenc', 'hevc_nvenc', 'av1_nvenc').
+        preset : str
+            NVENC preset (e.g., 'p4' for balanced quality/performance).
+        pix_fmt_in : str
+            Input pixel format (default 'rgb24'). Use 'gray' for grayscale frames.
+        log_file : str
+            Optional path to a file where FFmpeg logs will be written.
+        """
+        writer = AsyncFFmpegVideoWriter(
+            output_file=output_file,
+            width=width,
+            height=height,
+            fps=fps,
+            codec=codec,
+            preset=preset,
+            pix_fmt_in=pix_fmt_in,
+            stop_event=self.stop_event,
+            log_file=log_file
+        )
+        self.writers.append(writer)
+
+    def __enter__(self):
+        for writer in self.writers:
+            writer.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        errors = []
+        for writer in reversed(self.writers):
+            try:
+                if self.stop_event.is_set():
+                    print("Stopping MultiStreamManager due to stop event.")
+                writer.__exit__(exc_type, exc_val, exc_tb)
+            except Exception as e:
+                errors.append(e)
+        if errors:
+            # Raise the first error encountered
+            raise errors[0]
+
+    def write_frame_to_stream(self, index, frame):
+        """
+        Write a frame to a specific stream by index.
+
+        Parameters
+        ----------
+        index : int
+            Index of the stream in the `writers` list.
+        frame : np.ndarray
+            Frame data matching the stream's expected format.
+        """
+        if index < 0 or index >= len(self.writers):
+            raise IndexError("Stream index out of range.")
+        self.writers[index].write_frame(frame)
+
+    def write_frame_to_all(self, frames):
+        """
+        Write corresponding frames to all streams.
+
+        Parameters
+        ----------
+        frames : list of np.ndarray
+            List of frames, one for each stream, in the order they were added.
+        """
+        if len(frames) != len(self.writers):
+            raise ValueError("Number of frames does not match number of writers.")
+        for frame, writer in zip(frames, self.writers):
+            writer.write_frame(frame)

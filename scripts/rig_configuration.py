@@ -17,8 +17,9 @@ from itertools import product
 from flyprojection.utils.input import get_boolean_answer, get_predefined_answer
 from flyprojection.utils.networking import validate_ip_address
 from flyprojection.utils.geometry import fit_linear_curve, project_to_linear, fit_ellipse, subdivide_on_ellipse
+from flyprojection.utils.transforms import generate_grid_map, remap_image_with_interpolation, remap_image_with_map
 from flyprojection.controllers.basler_camera import BaslerCamera, list_basler_cameras
-
+from flyprojection.controllers.led_server import KasaPowerController
 # Import torch and kornia if available
 try:
     import torch
@@ -50,15 +51,30 @@ if __name__ == "__main__":
 
     # set up the argument parser
     parser = argparse.ArgumentParser(description='Open/Closed Loop Fly Projection System Rig Configuration')
+    
+    ## SETUP INPUT ARGUMENTS ##
+    
     parser.add_argument('--repo_dir', type=str, default='/mnt/sda1/Rishika/FlyProjection/', help='Path to the repository directory')
     parser.add_argument('--display_wait_time', type=int, default=500, help='Time to wait before closing the display window (in ms)')
     parser.add_argument('--homography_iterations', type=int, default=10, help='Number of iterations to find the homography between the camera and projector detections')
-    parser.add_argument('--conservative_saving', type=bool, default=True, help='Whether to save the rig configuration after each step of the calibration process')
-    parser.add_argument('--verify_map', type=bool, default=False, help='Whether to verify the map before using it')
     parser.add_argument('--interpolation_method', type=str, default='cubic', help='Interpolation method to use for the calibration process')
-    parser.add_argument('--gpu_mode', type=bool, default=False, help='Whether to use the GPU for the calibration process')
     parser.add_argument('--clahe_clip_limit', type=float, default=2.0, help='Clip limit for CLAHE')
     parser.add_argument('--clahe_tile_size', type=int, default=8, help='Tile size for CLAHE')
+    parser.add_argument('--calibration_square_count', type=int, default=20, help='Number of squares in the calibration pattern')
+
+    ## SETUP FLAGS ##
+
+    parser.add_argument('--conservative_saving', dest='conservative_saving', action='store_true', help='Whether to save the rig configuration after each step of the calibration process')
+    parser.add_argument('--no_conservative_saving', dest='conservative_saving', action='store_false', help='Whether to save the rig configuration after each step of the calibration process')
+    parser.set_defaults(conservative_saving=True)
+
+    parser.add_argument('--verify_map', dest='verify_map', action='store_true', help='Whether to verify the map before using it')
+    parser.add_argument('--no_verify_map', dest='verify_map', action='store_false', help='Whether to verify the map before using it')
+    parser.set_defaults(verify_map=False)
+
+    parser.add_argument('--gpu_mode', dest='gpu_mode', action='store_true', help='Whether to use the GPU for the calibration process')
+    parser.add_argument('--no_gpu_mode', dest='gpu_mode', action='store_false', help='Whether to use the GPU for the calibration process')
+    parser.set_defaults(gpu_mode=False)
 
     # parse the arguments
     args = parser.parse_args()
@@ -88,10 +104,15 @@ if __name__ == "__main__":
     
     # add the flag for GPU mode to the rig_config
     rig_config['gpu_mode'] = args.gpu_mode
+
+    print("INFO: Starting the calibration process.")
+    print("INFO: Please follow the instructions on the screen.\n")
+
+    print("INFO: Setting up Controllers.\n")
     
-    # ask for the IR led IP address
-    if get_boolean_answer(f"Do you want to use the default IR LED IP address ({rig_config['IR_LED_IP']})? [Y/n] ", default=True):
-        IR_LED_IP = rig_config['IR_LED_IP']
+    # ask for the IR LED IP address
+    if get_boolean_answer(f"Do you want to use the default IR LED IP address ({rig_config.get('IR_LED_IP', '192.168.0.1')})? [Y/n] ", default=True):
+        IR_LED_IP = rig_config.get('IR_LED_IP', '192.168.0.1')
     else:
         IR_LED_IP = input("Enter the IP address of the IR LED: ")
         # validate the IP address
@@ -99,16 +120,28 @@ if __name__ == "__main__":
 
     rig_config['IR_LED_IP'] = IR_LED_IP
 
+    # ask for Visual LED Panel hostname and port
+    if get_boolean_answer(f"Do you want to use the default Visual LED Panel hostname ({rig_config.get('visual_led_panel_hostname', 'flyprojection-server')}) and port ({rig_config.get('visual_led_panel_port', 65432)})? [Y/n] ", default=True):
+        visual_led_panel_hostname = rig_config.get('visual_led_panel_hostname', 'flyprojection-server')
+        visual_led_panel_port = rig_config.get('visual_led_panel_port', 65432)
+    else:
+        visual_led_panel_hostname = input("Enter the hostname of the Visual LED Panel: ")
+        visual_led_panel_port = int(input("Enter the port of the Visual LED Panel: "))
+    rig_config['visual_led_panel_hostname'] = visual_led_panel_hostname
+    rig_config['visual_led_panel_port'] = visual_led_panel_port
+
     # ask if the width and height of the projector should be changed
-    if get_boolean_answer(f"Do you want to use the current projector width and height ({rig_config['projector_width']}x{rig_config['projector_height']})? [Y/n] ", default=True):
-        projector_width = int(rig_config['projector_width'])
-        projector_height = int(rig_config['projector_height'])
+    if get_boolean_answer(f"Do you want to use the current projector width and height ({rig_config.get('projector_width', 1200)}x{rig_config.get('projector_height', 800)})? [Y/n] ", default=True):
+        projector_width = int(rig_config.get('projector_width', 1200))
+        projector_height = int(rig_config.get('projector_height', 800))
     else:
         projector_width = int(input("Enter the projector width: "))
         projector_height = int(input("Enter the projector height: "))
 
     rig_config['projector_width'] = projector_width
     rig_config['projector_height'] = projector_height
+
+    print("\nINFO: Setting up the Camera.\n")
 
     # list the cameras
     cameras = list_basler_cameras()
@@ -119,8 +152,8 @@ if __name__ == "__main__":
         print(f"Found {len(cameras)} camera(s).")
         if len(cameras) > 1:
             # ask the user to select a camera
-            if get_boolean_answer(f"Do you want to use the current camera index ({rig_config['camera_index']})? [Y/n] ", default=True):
-                camera_index = int(rig_config['camera_index'])
+            if get_boolean_answer(f"Do you want to use the current camera index ({rig_config.get('camera_index', 0)})? [Y/n] ", default=True):
+                camera_index = int(rig_config.get('camera_index', 0))
             else:
                 camera_index = int(input("Enter the index of the camera you would like to use (0-indexed and must be less than the number of cameras): "))
             assert camera_index < len(cameras), f"Invalid camera index: {camera_index}"
@@ -129,11 +162,11 @@ if __name__ == "__main__":
     rig_config['camera_index'] = camera_index
 
     # ask if the camera size should be changed
-    if get_boolean_answer(f"Do you want to use the current camera width and height ({rig_config['camera_width']}x{rig_config['camera_height']} with offset {rig_config['camera_offset_x']}, {rig_config['camera_offset_y']})? [Y/n] ", default=True):
-        camera_width = int(rig_config['camera_width'])
-        camera_height = int(rig_config['camera_height'])
-        camera_offset_x = int(rig_config['camera_offset_x'])
-        camera_offset_y = int(rig_config['camera_offset_y'])
+    if get_boolean_answer(f"Do you want to use the current camera width and height ({rig_config.get('camera_width', 2048)}x{rig_config.get('camera_height', 2048)}) with offset ({rig_config.get('camera_offset_x', 0)},{rig_config.get('camera_offset_y', 0)})? [Y/n] ", default=True):
+        camera_width = int(rig_config.get('camera_width', 2048))
+        camera_height = int(rig_config.get('camera_height', 2048))
+        camera_offset_x = int(rig_config.get('camera_offset_x', 0))
+        camera_offset_y = int(rig_config.get('camera_offset_y', 0))
     else:
         while True:
             try:
@@ -153,8 +186,8 @@ if __name__ == "__main__":
     rig_config['camera_offset_y'] = camera_offset_y
     
     # ask if calibration and experiment exposure times should be changed
-    if get_boolean_answer(f"Do you want to use the current calibration exposure time ({rig_config['calibration_exposure_time']})? [Y/n] ", default=True):
-        calibration_exposure_time = int(rig_config['calibration_exposure_time'])
+    if get_boolean_answer(f"Do you want to use the current calibration exposure time ({rig_config.get('calibration_exposure_time', 40000)})? [Y/n] ", default=True):
+        calibration_exposure_time = int(rig_config.get('calibration_exposure_time', 40000))
     else:
         while True:
             try:
@@ -167,8 +200,8 @@ if __name__ == "__main__":
                 continue
     rig_config['calibration_exposure_time'] = calibration_exposure_time
 
-    if get_boolean_answer(f"Do you want to use the current experiment exposure time ({rig_config['experiment_exposure_time']})? [Y/n] ", default=True):
-        experiment_exposure_time = int(rig_config['experiment_exposure_time'])
+    if get_boolean_answer(f"Do you want to use the current experiment exposure time ({rig_config.get('experiment_exposure_time', 9000)})? [Y/n] ", default=True):
+        experiment_exposure_time = int(rig_config.get('experiment_exposure_time', 9000))
     else:
         while True:
             try:
@@ -182,11 +215,8 @@ if __name__ == "__main__":
     rig_config['experiment_exposure_time'] = experiment_exposure_time
 
     # ask if the camera gain should be changed
-    # check if camera_gain is present in the rig_config
-    if 'camera_gain' not in rig_config:
-        rig_config['camera_gain'] = 0.0
-    if get_boolean_answer(f"Do you want to use the current camera gain ({rig_config['camera_gain']})? [Y/n] ", default=True):
-        camera_gain = float(rig_config['camera_gain'])
+    if get_boolean_answer(f"Do you want to use the current camera gain ({rig_config.get('camera_gain', 0.0)})? [Y/n] ", default=True):
+        camera_gain = float(rig_config.get('camera_gain', 0.0))
     else:
         while True:
             try:
@@ -199,12 +229,11 @@ if __name__ == "__main__":
                 continue
     rig_config['camera_gain'] = camera_gain
 
-    # ask if physical world dimensions should be changed
-    # check if physical_arena_radius is present in the rig_config
-    if 'physical_arena_radius' not in rig_config:
-        rig_config['physical_arena_radius'] = 75.0 # TEMPORARY
-    if get_boolean_answer(f"Do you want to use the current physical arena radius ({rig_config['physical_arena_radius']} mm)? [Y/n] ", default=True):
-        physical_arena_radius = float(rig_config['physical_arena_radius'])
+    print("\nINFO: Setting up the Physical Arena Properties.\n")
+
+    # ask if physical arena radius should be changed
+    if get_boolean_answer(f"Do you want to use the current physical arena radius ({rig_config.get('physical_arena_radius', 75.0)})? [Y/n] ", default=True):
+        physical_arena_radius = float(rig_config.get('physical_arena_radius', 75.0))
     else:
         while True:
             try:
@@ -217,6 +246,45 @@ if __name__ == "__main__":
                 continue
     rig_config['physical_arena_radius'] = physical_arena_radius
 
+    print("\nINFO: Setting up the Saving Parameters.\n")
+
+    # ask if the saving chunk size should be changed
+    if get_boolean_answer(f"Do you want to use the current saving chunk size ({rig_config.get('saving_chunk_size', 3000)})? [Y/n] ", default=True):
+        saving_chunk_size = int(rig_config.get('saving_chunk_size', 300))
+    else:
+        while True:
+            try:
+                saving_chunk_size = int(input("Enter the saving chunk size: "))
+                if saving_chunk_size <= 0:
+                    raise ValueError("Chunk size must be positive.")
+                break
+            except ValueError as e:
+                print(e)
+                continue
+    rig_config['saving_chunk_size'] = saving_chunk_size
+
+    # ask which pre-saving processing steps should be used
+    if get_boolean_answer(f"Do you want to use the current pre-saving processing steps ({rig_config.get('pre_saving_processing_steps', 'NA')})? [Y/n] ", default=True):
+        pre_saving_processing_steps = rig_config.get('pre_saving_processing_steps', 'NA')
+    else:
+        pre_saving_processing_steps = get_predefined_answer("Enter the pre-saving processing steps (difference (D), background subtraction (BS), none (NA)): ", ['D', 'BS', 'NA'], default='NA')
+    rig_config['pre_saving_processing_steps'] = pre_saving_processing_steps
+
+    # ask for the compression level
+    if get_boolean_answer(f"Do you want to use the current compression level ({rig_config.get('compression_level', 5)})? [Y/n] ", default=True):
+        compression_level = int(rig_config.get('compression_level', 5))
+    else:
+        while True:
+            try:
+                compression_level = int(input("Enter the compression level (0-9): "))
+                if compression_level < 0 or compression_level > 9:
+                    raise ValueError("Compression level must be between 0 and 9.")
+                break
+            except ValueError as e:
+                print(e)
+                continue
+    rig_config['compression_level'] = compression_level
+
 
     # Setup display and initialize Pygame
     os.environ['SDL_VIDEO_WINDOW_POS'] = f"0,0"
@@ -224,19 +292,23 @@ if __name__ == "__main__":
     clock = pygame.time.Clock()
     screen = pygame.display.set_mode((projector_width, projector_height), pygame.NOFRAME | pygame.HWSURFACE | pygame.DOUBLEBUF)
 
-    # turn off IR LED
-    os.system(f"kasa --host {IR_LED_IP} off")
-
     # take a picture
     with BaslerCamera(
         index=camera_index, 
-        FPS=FPS, 
         WIDTH=camera_width,
         HEIGHT=camera_height,
         OFFSETX=camera_offset_x,
         OFFSETY=camera_offset_y,
         EXPOSURE_TIME=calibration_exposure_time,
-        record_video=False) as cam:
+        GAIN=camera_gain,
+        record_video=False,
+        TRIGGER_MODE="Continuous",
+        CAMERA_FORMAT="Mono8"
+        ) as cam, \
+        KasaPowerController(
+            ip=IR_LED_IP,
+            default_state="off"
+        ) as ir_led_controller:
 
         cam.start()
 
@@ -354,6 +426,7 @@ if __name__ == "__main__":
 
             # save the rig configuration
             if args.conservative_saving:
+                print("INFO: Conservative saving is enabled. Saving the rig configuration.")
                 with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
                     json.dump(rig_config, f, indent=4)
 
@@ -454,8 +527,18 @@ if __name__ == "__main__":
         rig_config['camera_space_arena_center'] = camera_space_arena_center.tolist()
         rig_config['camera_space_arena_radius'] = camera_space_arena_radius
 
+        # calculate the scaling factor between camera and physical arena space and vice versa
+        camera_to_physical_scaling = physical_arena_radius / camera_space_arena_radius
+        physical_to_camera_scaling = camera_space_arena_radius / physical_arena_radius
+
+        # save the scaling factors
+        rig_config['camera_to_physical_scaling'] = camera_to_physical_scaling
+        rig_config['physical_to_camera_scaling'] = physical_to_camera_scaling
+
+
         # save the rig configuration
         if args.conservative_saving:
+            print("INFO: Conservative saving is enabled. Saving the rig configuration.")
             with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
                 json.dump(rig_config, f, indent=4)
 
@@ -484,6 +567,7 @@ if __name__ == "__main__":
 
         # save the rig configuration
         if args.conservative_saving:
+            print("INFO: Conservative saving is enabled. Saving the rig configuration.")
             with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
                 json.dump(rig_config, f, indent=4)
 
@@ -559,6 +643,7 @@ if __name__ == "__main__":
 
         # save the rig configuration
         if args.conservative_saving:
+            print("INFO: Conservative saving is enabled. Saving the rig configuration.")
             with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
                 json.dump(rig_config, f, indent=4)
 
@@ -601,6 +686,7 @@ if __name__ == "__main__":
 
         # save the rig configuration
         if args.conservative_saving:
+            print("INFO: Conservative saving is enabled. Saving the rig configuration.")
             with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
                 json.dump(rig_config, f, indent=4)
 
@@ -784,7 +870,7 @@ if __name__ == "__main__":
 
 
         # calculate the size of each square in the calibration pattern
-        N_squares = 20
+        N_squares = args.calibration_square_count
         square_size = 2*insquare_halfside/N_squares
 
         # draw the calibration pattern on the screen
@@ -1084,6 +1170,7 @@ if __name__ == "__main__":
 
         # save the rig configuration
         if args.conservative_saving:
+            print("INFO: Conservative saving is enabled. Saving the rig configuration.")
             with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
                 json.dump(rig_config, f, indent=4)
 
@@ -1204,6 +1291,7 @@ if __name__ == "__main__":
 
         # save the rig configuration
         if args.conservative_saving:
+            print("INFO: Conservative saving is enabled. Saving the rig configuration.")
             with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
                 json.dump(rig_config, f, indent=4)
 
@@ -1364,6 +1452,7 @@ if __name__ == "__main__":
 
         # save the rig configuration
         if args.conservative_saving:
+            print("INFO: Conservative saving is enabled. Saving the rig configuration.")
             with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
                 json.dump(rig_config, f, indent=4)
 
@@ -1479,12 +1568,8 @@ if __name__ == "__main__":
 
         # save the rig configuration
         with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
+            print("INFO: Saving the rig configuration...")
             json.dump(rig_config, f, indent=4)
-
-        
-
-        # turn on IR LED
-        os.system(f"kasa --host {IR_LED_IP} on")
 
         # Clean up and exit
         pygame.quit()

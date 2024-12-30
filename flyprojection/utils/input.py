@@ -107,7 +107,7 @@ def get_date(prompt, default=None):
 
 # PySide2 based input functions
 import sys
-from PySide2.QtWidgets import QApplication, QFileDialog, QInputDialog
+from PySide2.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox
 
 def get_directory_path_qt(prompt, default=None):
     """Get a directory path from the user using a Qt dialog. Defaults if no answer is given."""
@@ -165,3 +165,12 @@ def get_integer_answer_qt(prompt, default=None):
         return answer
     else:
         return default
+
+def get_boolean_answer_qt(prompt):
+    """Get a button press from the user using a Qt dialog."""
+    app = QApplication.instance()  # Check if an instance already exists
+    if app is None:
+        app = QApplication(sys.argv)  # Create a new QApplication instance
+
+    button = QMessageBox.question(None, prompt, prompt, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+    return button == QMessageBox.Yes

@@ -17,11 +17,6 @@ def load_module_from_path(module_name, file_path):
     spec.loader.exec_module(module)
     return module
 
-# setup signal handler for graceful shutdown
-def signal_handler(sig, frame):
-    print("Interrupt received. Gracefully shutting down...")
-    sys.exit(0)
-
 def tensor_to_numpy(tensor):
     """
     Convert a torch tensor to a NumPy array for display.

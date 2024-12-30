@@ -185,7 +185,7 @@ class BaslerCamera:
         # Set MaxNumBuffer to 15
         if self.cam.GetDeviceInfo().GetModelName() in camera_max_fps.keys():
             self.cam.MaxNumBuffer = 1000 #int(2*60*60*camera_max_fps[self.cam.GetDeviceInfo().GetModelName()]) # 2 hours of max FPS
-            print(f"MaxNumBuffer set to {int(2*60*60*camera_max_fps[self.cam.GetDeviceInfo().GetModelName()])}. Acquisitions will be limited to 2 hours. To change, modify the code.")
+            print(f"MaxNumBuffer set to {self.cam.MaxNumBuffer}.")
         else:
             raise Exception(f"Camera model {self.cam.GetDeviceInfo().GetModelName()} not found in camera_max_fps.")
 

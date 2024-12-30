@@ -1,8 +1,10 @@
 import socket
 import struct
 import numpy as np
+import os
+import subprocess
 
-class LEDPanelController:
+class WS2812B_LEDController:
     """A server class to send image or test pattern commands to an LED matrix client using binary transmission."""
     
     def __init__(self, host='flyprojection-server', port=65432, rows=64, cols=8):
@@ -13,6 +15,9 @@ class LEDPanelController:
         self.cols = cols
         self.connection = None
 
+        # spawn a new terminal to run the LED client
+        # os.system(f"gnome-terminal -- bash -c 'cd /mnt/sda1/Rishika/FlyProjection/flyprojection/controllers/;./start_LED_client.sh'")
+
     def __enter__(self):
         """Handle entering the 'with' block by establishing the connection."""
         self.connect_to_client()
@@ -21,7 +26,7 @@ class LEDPanelController:
     def __exit__(self, exc_type, exc_value, traceback):
         """Handle exiting the 'with' block by closing the connection."""
         self.close_connection()
-        print("Successfully closed LED controller connection. Exiting LEDPanelController Context.")
+        print("Successfully closed LED controller connection. Exiting WS2812B_LEDController Context.")
 
     def connect_to_client(self):
         """Establish a persistent connection to the LED client."""
@@ -146,21 +151,6 @@ class LEDPanelController:
                     image[row, col, :] = color2
         return image
 
-    def create_triangles(self, triangle_height, color1, color2):
-        """Create an alternating triangle pattern."""
-        image = np.zeros((self.rows, self.cols, 3), dtype=int)
-        for row in range(self.rows):
-            for col in range(self.cols):
-                block = row // triangle_height
-                offset = abs((col % triangle_height) - triangle_height // 2)
-                if block % 2 == 0:  # Upward triangle
-                    if row % triangle_height >= offset:
-                        image[row, col, :] = color1
-                else:  # Downward triangle
-                    if row % triangle_height <= triangle_height - offset - 1:
-                        image[row, col, :] = color2
-        return image
-
     def create_diagonal_stripes(self, stripe_width, color1, color2):
         """Create diagonal stripe pattern."""
         image = np.zeros((self.rows, self.cols, 3), dtype=int)
@@ -188,3 +178,40 @@ class LEDPanelController:
             for col in range(self.cols):
                 image[row, col, :] = palette[np.random.randint(len(palette))]
         return image
+
+class KasaPowerController:
+    """A server class to send power commands to a Kasa Smart Plug client using python-kasa."""
+
+    def __init__(self, ip, default_state="off"):
+        """Initialize the server with the target IP."""
+        self.ip = ip
+        self.default_state = default_state
+    
+    def turn_on(self):
+        """Turn on the Kasa Smart Plug."""
+        try:
+            os.system(f"kasa --host {self.ip} on")
+            print(f"Turned on Kasa Smart Plug at {self.ip}")
+        except Exception as e:
+            print(f"Error turning on Kasa Smart Plug: {e}")
+
+    def turn_off(self):
+        """Turn off the Kasa Smart Plug."""
+        try:
+            os.system(f"kasa --host {self.ip} off")
+            print(f"Turned off Kasa Smart Plug at {self.ip}")
+        except Exception as e:
+            print(f"Error turning off Kasa Smart Plug: {e}")
+
+    def __enter__(self):
+        """Handle entering the 'with' block by establishing the connection."""
+        if self.default_state == "on":
+            self.turn_on()
+        else:
+            self.turn_off()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """Handle exiting the 'with' block by turning off the plug."""
+        self.turn_off()
+        print("Successfully turned off Kasa Smart Plug. Exiting KasaPowerController Context.")
