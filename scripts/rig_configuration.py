@@ -37,8 +37,12 @@ def point_selection_callback(event, x, y, flags, param):
         points.append((x, y))
         print(f"Point stored: {points[-1]}")
     elif event == cv2.EVENT_RBUTTONDOWN:
-        points.pop()
-        print("Point removed.")
+        if points:  # Check if points is not empty before popping
+            points.pop()
+            print("Point removed.")
+        else:
+            print("No points to remove.")
+
 
 ### TERMINOLOGY ###
 # camera_space: the (pixel x pixel) space of the camera
@@ -246,44 +250,44 @@ if __name__ == "__main__":
                 continue
     rig_config['physical_arena_radius'] = physical_arena_radius
 
-    print("\nINFO: Setting up the Saving Parameters.\n")
+    # print("\nINFO: Setting up the Saving Parameters.\n")
 
-    # ask if the saving chunk size should be changed
-    if get_boolean_answer(f"Do you want to use the current saving chunk size ({rig_config.get('saving_chunk_size', 3000)})? [Y/n] ", default=True):
-        saving_chunk_size = int(rig_config.get('saving_chunk_size', 300))
-    else:
-        while True:
-            try:
-                saving_chunk_size = int(input("Enter the saving chunk size: "))
-                if saving_chunk_size <= 0:
-                    raise ValueError("Chunk size must be positive.")
-                break
-            except ValueError as e:
-                print(e)
-                continue
-    rig_config['saving_chunk_size'] = saving_chunk_size
+    # # ask if the saving chunk size should be changed
+    # if get_boolean_answer(f"Do you want to use the current saving chunk size ({rig_config.get('saving_chunk_size', 3000)})? [Y/n] ", default=True):
+    #     saving_chunk_size = int(rig_config.get('saving_chunk_size', 300))
+    # else:
+    #     while True:
+    #         try:
+    #             saving_chunk_size = int(input("Enter the saving chunk size: "))
+    #             if saving_chunk_size <= 0:
+    #                 raise ValueError("Chunk size must be positive.")
+    #             break
+    #         except ValueError as e:
+    #             print(e)
+    #             continue
+    # rig_config['saving_chunk_size'] = saving_chunk_size
 
-    # ask which pre-saving processing steps should be used
-    if get_boolean_answer(f"Do you want to use the current pre-saving processing steps ({rig_config.get('pre_saving_processing_steps', 'NA')})? [Y/n] ", default=True):
-        pre_saving_processing_steps = rig_config.get('pre_saving_processing_steps', 'NA')
-    else:
-        pre_saving_processing_steps = get_predefined_answer("Enter the pre-saving processing steps (difference (D), background subtraction (BS), none (NA)): ", ['D', 'BS', 'NA'], default='NA')
-    rig_config['pre_saving_processing_steps'] = pre_saving_processing_steps
+    # # ask which pre-saving processing steps should be used
+    # if get_boolean_answer(f"Do you want to use the current pre-saving processing steps ({rig_config.get('pre_saving_processing_steps', 'NA')})? [Y/n] ", default=True):
+    #     pre_saving_processing_steps = rig_config.get('pre_saving_processing_steps', 'NA')
+    # else:
+    #     pre_saving_processing_steps = get_predefined_answer("Enter the pre-saving processing steps (difference (D), background subtraction (BS), none (NA)): ", ['D', 'BS', 'NA'], default='NA')
+    # rig_config['pre_saving_processing_steps'] = pre_saving_processing_steps
 
-    # ask for the compression level
-    if get_boolean_answer(f"Do you want to use the current compression level ({rig_config.get('compression_level', 5)})? [Y/n] ", default=True):
-        compression_level = int(rig_config.get('compression_level', 5))
-    else:
-        while True:
-            try:
-                compression_level = int(input("Enter the compression level (0-9): "))
-                if compression_level < 0 or compression_level > 9:
-                    raise ValueError("Compression level must be between 0 and 9.")
-                break
-            except ValueError as e:
-                print(e)
-                continue
-    rig_config['compression_level'] = compression_level
+    # # ask for the compression level
+    # if get_boolean_answer(f"Do you want to use the current compression level ({rig_config.get('compression_level', 5)})? [Y/n] ", default=True):
+    #     compression_level = int(rig_config.get('compression_level', 5))
+    # else:
+    #     while True:
+    #         try:
+    #             compression_level = int(input("Enter the compression level (0-9): "))
+    #             if compression_level < 0 or compression_level > 9:
+    #                 raise ValueError("Compression level must be between 0 and 9.")
+    #             break
+    #         except ValueError as e:
+    #             print(e)
+    #             continue
+    # rig_config['compression_level'] = compression_level
 
 
     # Setup display and initialize Pygame
@@ -351,23 +355,24 @@ if __name__ == "__main__":
 
                     # Check for mouse button down event
                     if event.type == pygame.MOUSEBUTTONDOWN:
-                        # Store the current mouse position in the points list if the left mouse button is pressed
                         if event.button == 1:
                             points.append(pygame.mouse.get_pos())
-                            print(f"Point stored: {points[-1]}")  # Print the stored point to the console
-                            
-                            # Exit the loop if we have 4 points
-                            if len(points) >= 4:
-                                # clear the screen
-                                screen.fill((0, 0, 0))
+                            print(f"Point stored: {points[-1]}")
 
-                                # stop the loop
-                                collecting_points = False
-                                break
-                        # Remove the last point if the right mouse button is pressed
                         elif event.button == 3:
-                            points.pop()
-                            print("Point removed.")
+                            if points:
+                                points.pop()
+                                print("Point removed.")
+                            else:
+                                print("No points to remove.")
+                    
+                    elif event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:  # Enter key
+                            if len(points) < 5:
+                                print("At least 5 points are required to fit a circle.")
+                                continue
+                            collecting_points = False
+                            break # Break the event loop
 
                 # Get the current mouse position
                 mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -393,6 +398,20 @@ if __name__ == "__main__":
 
                 # Draw the custom cursor
                 screen.blit(crosshair_cursor, (mouse_x - 5, mouse_y - 5))  # Center the cursor on the mouse position
+
+                
+                # Fit and draw the circle (INTERACTIVE PART)
+                if len(points) >= 3:  # Need at least 3 points for a circle fit
+                    points_np = np.array(points)
+                    try:
+                        projector_space_radius, projector_space_center = nsphere_fit(points_np)
+                        pygame.draw.circle(screen, (255, 255, 255), projector_space_center.astype(int), int(projector_space_radius), 2)
+                    except Exception as e: # Catch potential errors during fitting
+                        print(f"Error during circle fitting: {e}")
+                        pass # or handle in a way that is appropriate
+
+                # Draw the custom cursor
+                screen.blit(crosshair_cursor, (mouse_x - 5, mouse_y - 5))
 
                 # Update the display
                 pygame.display.flip()
@@ -565,12 +584,6 @@ if __name__ == "__main__":
         # save the degree of detail in the rig_config
         rig_config['calibration_detail'] = detail
 
-        # save the rig configuration
-        if args.conservative_saving:
-            print("INFO: Conservative saving is enabled. Saving the rig configuration.")
-            with open(os.path.join(repo_dir, 'configs', 'rig_config.json'), 'w') as f:
-                json.dump(rig_config, f, indent=4)
-
 
         # check if projection_space_detail_markers and projector_space_detail_markers are present in the rig_config and flag_for_calibration is False
         if 'projection_space_detail_markers' in rig_config and 'projector_space_detail_markers' in rig_config and not flag_for_calibration:
@@ -609,9 +622,9 @@ if __name__ == "__main__":
             cv2.namedWindow("Mark Markers on the Camera Image", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("Mark Markers on the Camera Image", 1300, 1300)
 
-            cv2.setMouseCallback("Mark Markers on the Camera Image", point_selection_callback)
-
+            # set up the mouse callback
             points = []
+            cv2.setMouseCallback("Mark Markers on the Camera Image", point_selection_callback)
 
             # make a copy of the camera image
             camera_image_with_points = camera_image.copy()

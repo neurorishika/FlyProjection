@@ -341,6 +341,11 @@ if __name__ == "__main__":
 
                     estimates, camera_image = tracker.process_next_frame(return_camera_image=True)
 
+                    # display the camera image using cv2
+                    cv2.imshow('Camera Feed', camera_image)
+                    cv2.waitKey(1)
+                    
+
                     if started and current_time - start_time < burn_in_time:
                         logger.info(f"Burn-in time: {current_time - start_time:.2f}s")
                         continue

@@ -8,7 +8,7 @@ if __name__ == "__main__":
         color_image = server.create_radial(
         center=(32, 3),
         ring_width=2,
-        color1=(0, 0, 50),
+        color1=(0, 0, 255),
         color2=(0, 0, 0),
         )
         # show image in matplotlib
