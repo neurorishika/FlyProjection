@@ -54,6 +54,7 @@ class FastTracker:
                  min_tracking_counts=10,
                  smoothing_alpha=0.5,
                  moving_threshold=5,
+                 fallback_to_last_position=False,
                  debug=False):
         """
         Initialize the FastTracker class, which tracks multiple targets in a video stream from a given camera.
@@ -112,6 +113,7 @@ class FastTracker:
         self.min_tracking_counts = min_tracking_counts
         self.smoothing_alpha = smoothing_alpha
         self.moving_threshold = moving_threshold
+        self.fallback_to_last_position = fallback_to_last_position
         self.debug = debug
 
         self.background_model_lightest = None
@@ -313,7 +315,7 @@ class FastTracker:
         # Prepare estimates for return
         estimates = []
         if self.detection_initialized:
-            for i, _ in enumerate(self.kalman_filters):
+            for i, kf in enumerate(self.kalman_filters):
                 if len(self.trajectories[i]) >= 2:
                     current_entry = self.trajectories[i][-1]
                     prev_entry = self.trajectories[i][-2]
@@ -375,6 +377,26 @@ class FastTracker:
                     current_entry['smoothed_vy'] = smoothed_vy
                     current_entry['smoothed_angular_velocity'] = smoothed_angular_velocity
 
+                    # get future estimates from kalman filter
+                    kf_prediction = kf.predict()
+                    future_x = kf_prediction[0]
+                    future_y = kf_prediction[1]
+                    future_theta = kf_prediction[2]
+
+                    # fallback to last position if no valid measurements
+                    if self.fallback_to_last_position and (np.isnan(current_entry['x']) or np.isnan(current_entry['y'])):
+                        current_entry['x'] = future_x
+                        current_entry['y'] = future_y
+                        current_entry['theta'] = future_theta
+                        # use last known values for velocity and direction and last smoothed values
+                        v = prev_entry.get('raw_velocity', np.nan)
+                        d = prev_entry.get('raw_direction', np.nan)
+                        a = prev_entry.get('raw_angle', np.nan)
+                        smoothed_velocity = prev_entry.get('smoothed_velocity', np.nan)
+                        smoothed_direction = prev_entry.get('smoothed_direction', np.nan)
+                        smoothed_angle = prev_entry.get('smoothed_angle', np.nan)
+                        smoothed_angular_velocity = prev_entry.get('smoothed_angular_velocity', np.nan)
+
                     estimates.append({
                         'id': self.track_ids[i],
                         'position': (current_entry['x'], current_entry['y']),
@@ -385,7 +407,10 @@ class FastTracker:
                         'direction': d,
                         'direction_smooth': smoothed_direction,
                         'angular_velocity_smooth': smoothed_angular_velocity,
-                        'time_since_start': current_time - self.start_time
+                        'time_since_start': current_time - self.start_time,
+                        'future_position': (future_x, future_y),
+                        'future_angle': future_theta
+
                     })
                 else:
                     current_entry = self.trajectories[i][-1]
@@ -413,7 +438,9 @@ class FastTracker:
                         'direction': np.nan,
                         'direction_smooth': np.nan,
                         'angular_velocity_smooth': np.nan,
-                        'time_since_start': current_time - self.start_time
+                        'time_since_start': current_time - self.start_time,
+                        'future_position': (np.nan, np.nan),
+                        'future_angle': np.nan
                     })
         else:
             estimates = None

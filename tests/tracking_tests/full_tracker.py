@@ -529,72 +529,856 @@
 # if __name__ == "__main__":
 #     main()
 
+# """
+# Full Production-Ready PySide2 Script for Fly/Animal Multi-Object Tracking with:
+# 1) Local Watershed-Based Merge Splitting
+# 2) Brightness/Contrast/Gamma Adjustments for Preprocessing
+# 3) Kalman + Hungarian Multi-Object Tracking
+# 4) Memory-Safe Practices (Explicit Cleanup, GC)
+
+# Features:
+# ---------
+# - Liberal mask generation (light morphological open/close).
+# - Local ROI refinement using watershed for suspicious merges.
+# - Brightness, Contrast, Gamma adjustments to improve poor video quality.
+# - User-friendly PySide2 UI with trackbars/spinboxes:
+#    * Threshold, morphological kernel size, min contour area, etc.
+#    * Merge area threshold to identify suspicious merges.
+#    * Brightness, Contrast, Gamma controls to tune the image on the fly.
+# - Background model: “lightest pixel” approach (one pass, not adaptive).
+# - Memory safety: explicit object deletion + gc.collect() after each frame.
+# - Optional real-time “Preview” mode or full-run “Tracking” mode.
+# - Resizable frames to reduce memory usage if needed.
+# - Basic visualization of Foreground Mask & Lightest Background in corners.
+
+# Setup:
+# ------
+# To use:
+# 1) Install dependencies (PySide2, OpenCV, NumPy, SciPy, matplotlib).
+# 2) Run the script: python tracking_local_watershed.py
+# 3) Click “Select Video File...” to pick a .mp4 or .avi video.
+# 4) Adjust parameters on the right panel.
+# 5) “Preview” to see a live preview (stop with the same button).
+# 6) “Full Tracking” to process the entire video. Press “Stop” to cancel.
+
+# Additional Notes:
+# ----------------
+# - The user can implement CSV saving of final trajectories by hooking
+#   the data from the worker's Kalman filters and writing them out in
+#   on_tracking_finished if needed. Currently, we only display a message.
+# - If you observe that sometimes the entire bounding box is used for a merge,
+#   it may be that your threshold or background model is marking most of the
+#   frame as foreground. Adjust brightness/contrast/gamma or reset the background
+#   logic as needed. Also ensure your MERGE_AREA_THRESHOLD is not set too low.
+# """
+
+# import sys
+# import time
+# import gc
+# import numpy as np
+# import cv2
+# from scipy.spatial import distance
+# from scipy.optimize import linear_sum_assignment
+# import matplotlib.pyplot as plt
+
+# from PySide2.QtCore import (
+#     Qt, QThread, Signal, Slot, QMutex
+# )
+# from PySide2.QtGui import (
+#     QImage, QPixmap
+# )
+# from PySide2.QtWidgets import (
+#     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout,
+#     QHBoxLayout, QFileDialog, QSpinBox, QDoubleSpinBox, QCheckBox, QMessageBox,
+#     QGroupBox, QFormLayout, QLineEdit
+# )
+
+
+# def apply_image_adjustments(
+#     gray_frame: np.ndarray,
+#     brightness: float,
+#     contrast: float,
+#     gamma: float
+# ) -> np.ndarray:
+#     """
+#     Apply brightness, contrast, and gamma corrections to a grayscale image.
+
+#     Parameters
+#     ----------
+#     gray_frame : np.ndarray
+#         8-bit grayscale image (shape: H x W).
+#     brightness : float
+#         Value added to each pixel after contrast scaling. Range e.g. [-100..100].
+#     contrast : float
+#         Scaling factor for pixel values. e.g. 1.0 means no change, 1.2 means 20% higher contrast.
+#     gamma : float
+#         Gamma correction factor. 1.0 means no change, <1.0 darkens midtones, >1.0 brightens.
+
+#     Returns
+#     -------
+#     adjusted : np.ndarray
+#         The adjusted grayscale image, uint8.
+#     """
+#     # 1) Brightness & Contrast using OpenCV convertScaleAbs
+#     #    new_pixel = alpha * old_pixel + beta
+#     adjusted = cv2.convertScaleAbs(gray_frame, alpha=contrast, beta=brightness)
+
+#     # 2) Gamma Correction
+#     #    pixel_out = 255 * ((pixel_in / 255)^(1/gamma))
+#     if abs(gamma - 1.0) > 1e-3:
+#         look_up_table = np.array([
+#             np.clip(((i / 255.0) ** (1.0 / gamma)) * 255.0, 0, 255)
+#             for i in range(256)
+#         ], dtype=np.uint8)
+#         adjusted = cv2.LUT(adjusted, look_up_table)
+
+#     return adjusted
+
+
+# class TrackingWorker(QThread):
+#     """
+#     A QThread worker that performs multi-object tracking on a video file using:
+#     1) Brightness/Contrast/Gamma corrections
+#     2) Lightest-background approach
+#     3) Local watershed-based refinement of suspicious merges
+#     4) Kalman filters + Hungarian assignment
+
+#     Signals:
+#     --------
+#     frame_signal: emits an RGB frame (numpy array) for display
+#     finished_signal: emits a tuple (finished_normally: bool, fps_list: list)
+#     """
+#     frame_signal = Signal(np.ndarray)
+#     finished_signal = Signal(bool, list)
+
+#     def __init__(self, video_path: str, parent=None):
+#         super().__init__(parent)
+#         self.video_path = video_path
+
+#         self.params_mutex = QMutex()
+#         self.parameters = {}
+
+#         self._stop_flag = False
+#         self.cap = None
+
+#         # Kalman/tracking structures
+#         self.kalman_filters = []
+#         self.track_ids = []
+#         self.trajectories = []
+
+#         # Background model
+#         self.background_model_lightest = None
+
+#         # Tracking flags
+#         self.detection_initialized = False
+#         self.tracking_stabilized = False
+#         self.detection_counts = 0
+#         self.tracking_counts = 0
+
+#         # Others
+#         self.fps_list = []
+#         self.frame_count = 0
+#         self.start_time = 0
+
+#     def set_parameters(self, new_params: dict):
+#         """ Safely update tracking parameters. """
+#         self.params_mutex.lock()
+#         self.parameters = new_params
+#         self.params_mutex.unlock()
+
+#     def get_current_params(self):
+#         """ Return a copy of the parameters. """
+#         self.params_mutex.lock()
+#         p = dict(self.parameters)
+#         self.params_mutex.unlock()
+#         return p
+
+#     def stop(self):
+#         """ Signal this worker to stop. """
+#         self._stop_flag = True
+
+#     def init_kalman_filters(self, p):
+#         """
+#         Initialize Kalman filters based on number of targets in p.
+#         """
+#         kf_list = []
+#         for _ in range(p["MAX_TARGETS"]):
+#             kf = cv2.KalmanFilter(5, 3)
+#             # Measurement: x, y, theta
+#             kf.measurementMatrix = np.array([
+#                 [1, 0, 0, 0, 0],
+#                 [0, 1, 0, 0, 0],
+#                 [0, 0, 1, 0, 0]
+#             ], np.float32)
+
+#             # Transition: x->x+vx, y->y+vy, theta->theta
+#             kf.transitionMatrix = np.array([
+#                 [1, 0, 0, 1, 0],
+#                 [0, 1, 0, 0, 1],
+#                 [0, 0, 1, 0, 0],
+#                 [0, 0, 0, 1, 0],
+#                 [0, 0, 0, 0, 1]
+#             ], np.float32)
+
+#             kf.processNoiseCov = np.eye(5, dtype=np.float32) * p["KALMAN_NOISE_COVARIANCE"]
+#             kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * p["KALMAN_MEASUREMENT_NOISE_COVARIANCE"]
+#             kf.errorCovPre = np.eye(5, dtype=np.float32)
+#             kf_list.append(kf)
+#         return kf_list
+
+#     def run(self):
+#         """ Main loop for reading frames, segmenting, tracking, and signal emission. """
+#         gc.collect()
+#         self._stop_flag = False
+#         p = self.get_current_params()
+
+#         # Attempt to open capture
+#         self.cap = cv2.VideoCapture(self.video_path)
+#         if not self.cap.isOpened():
+#             print(f"[ERROR] Cannot open video file: {self.video_path}")
+#             self.finished_signal.emit(True, [])
+#             return
+
+#         # Re-initialize
+#         self.background_model_lightest = None
+#         self.kalman_filters = self.init_kalman_filters(p)
+#         self.track_ids = np.arange(p["MAX_TARGETS"])
+#         self.trajectories = [[] for _ in range(p["MAX_TARGETS"])]
+
+#         self.detection_initialized = False
+#         self.tracking_stabilized = False
+#         self.detection_counts = 0
+#         self.tracking_counts = 0
+
+#         self.fps_list.clear()
+#         self.frame_count = 0
+#         self.start_time = time.time()
+
+#         try:
+#             while not self._stop_flag:
+#                 ret, frame = self.cap.read()
+#                 if not ret:
+#                     break
+
+#                 self.frame_count += 1
+
+#                 # Optionally resize frame
+#                 if p.get("RESIZE_FACTOR", 1.0) < 1.0:
+#                     rsz = p["RESIZE_FACTOR"]
+#                     frame = cv2.resize(frame,
+#                                        (int(frame.shape[1]*rsz), int(frame.shape[0]*rsz)),
+#                                        interpolation=cv2.INTER_AREA)
+
+#                 # Convert to grayscale
+#                 gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+#                 # Apply brightness/contrast/gamma
+#                 bright = p.get("BRIGHTNESS", 0.0)
+#                 contr = p.get("CONTRAST", 1.0)
+#                 gamm  = p.get("GAMMA", 1.0)
+#                 gray_frame = apply_image_adjustments(gray_frame, bright, contr, gamm)
+
+#                 # Initialize background if needed
+#                 if self.background_model_lightest is None:
+#                     self.background_model_lightest = gray_frame.astype(np.float32)
+#                     # Show the first frame
+#                     self.emit_frame(frame)
+#                     self._cleanup_locals(frame, gray_frame)
+#                     continue
+
+#                 # Update "lightest" background
+#                 self.background_model_lightest = np.maximum(
+#                     self.background_model_lightest, gray_frame.astype(np.float32)
+#                 )
+#                 bg_uint8 = cv2.convertScaleAbs(self.background_model_lightest)
+
+#                 # Create "liberal" mask
+#                 fg_mask = cv2.absdiff(bg_uint8, gray_frame)
+#                 _, fg_mask = cv2.threshold(fg_mask, p["THRESHOLD_VALUE"], 255, cv2.THRESH_BINARY)
+
+#                 # Morphological open/close
+#                 kernel = cv2.getStructuringElement(
+#                     cv2.MORPH_ELLIPSE, (p["MORPH_KERNEL_SIZE"], p["MORPH_KERNEL_SIZE"])
+#                 )
+#                 fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
+#                 fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel)
+
+#                 # Copy to main_mask
+#                 main_mask = fg_mask.copy()
+
+#                 # Identify suspicious merges: large area or insufficient total contours
+#                 contours, _ = cv2.findContours(main_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#                 merge_area_thr = p.get("MERGE_AREA_THRESHOLD", 1500)
+
+#                 total_contours = sum(1 for cnt in contours if cv2.contourArea(cnt) > 0)
+#                 suspicious_bboxes = []
+#                 for cnt in contours:
+#                     area = cv2.contourArea(cnt)
+#                     if area < 1:
+#                         continue
+#                     x, y, w, h = cv2.boundingRect(cnt)
+#                     if area > merge_area_thr or total_contours < p["MAX_TARGETS"]:
+#                         suspicious_bboxes.append((x, y, w, h))
+
+#                 # Local watershed splitting
+#                 for (x, y, w, h) in suspicious_bboxes:
+#                     sub_gray = gray_frame[y:y+h, x:x+w]
+#                     sub_mask = main_mask[y:y+h, x:x+w]
+
+#                     # skip if trivially small
+#                     if np.count_nonzero(sub_mask) < 10:
+#                         continue
+
+#                     refined_mask = self._local_watershed_split(sub_gray, sub_mask, p)
+#                     main_mask[y:y+h, x:x+w] = refined_mask
+
+#                 # final contours for measurement
+#                 final_contours, _ = cv2.findContours(main_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#                 measurements, sizes = [], []
+#                 for cnt in final_contours:
+#                     area = cv2.contourArea(cnt)
+#                     if area < p["MIN_CONTOUR_AREA"]:
+#                         continue
+#                     if len(cnt) >= 5:
+#                         ellipse = cv2.fitEllipse(cnt)
+#                         (cx, cy), (MA, ma), angle = ellipse
+#                         measurements.append(np.array([cx, cy, np.deg2rad(angle)], dtype=np.float32))
+#                         sizes.append(area)
+
+#                 # Keep largest up to MAX_TARGETS
+#                 if len(measurements) > p["MAX_TARGETS"]:
+#                     sorted_idx = np.argsort(sizes)[::-1]
+#                     measurements = [measurements[i] for i in sorted_idx[:p["MAX_TARGETS"]]]
+
+#                 # Check detection
+#                 if len(measurements) == p["MAX_TARGETS"]:
+#                     self.detection_counts += 1
+#                 else:
+#                     self.detection_counts = 0
+
+#                 if self.detection_counts >= p["MIN_DETECTION_COUNTS"]:
+#                     self.detection_initialized = True
+
+#                 overlay_frame = frame.copy()
+#                 if self.detection_initialized and measurements:
+#                     # Possibly init KF states on first iteration
+#                     if self.frame_count == 1:
+#                         h_, w_ = gray_frame.shape
+#                         for kf in self.kalman_filters:
+#                             kf.statePre = np.array([
+#                                 np.random.randint(0, w_),
+#                                 np.random.randint(0, h_),
+#                                 0, 0, 0
+#                             ], dtype=np.float32)
+#                             kf.statePost = kf.statePre.copy()
+
+#                     # Predict
+#                     predicted_positions = []
+#                     for i, kf in enumerate(self.kalman_filters):
+#                         pred = kf.predict()
+#                         predicted_positions.append(pred[:3].flatten())
+#                     predicted_positions = np.array(predicted_positions, dtype=np.float32)
+
+#                     # Hungarian assignment
+#                     cost_matrix = np.zeros((p["MAX_TARGETS"], len(measurements)), dtype=np.float32)
+#                     for i, pred_pos in enumerate(predicted_positions):
+#                         for j, meas in enumerate(measurements):
+#                             pos_cost = distance.euclidean(pred_pos[:2], meas[:2])
+#                             angle_diff = abs(pred_pos[2] - meas[2])
+#                             angle_diff = min(angle_diff, 2*np.pi - angle_diff)
+#                             cost_matrix[i, j] = pos_cost + angle_diff
+
+#                     row_idx, col_idx = linear_sum_assignment(cost_matrix)
+
+#                     avg_cost = 0.0
+#                     for row, col in zip(row_idx, col_idx):
+#                         if row < p["MAX_TARGETS"] and col < len(measurements):
+#                             if (not self.tracking_stabilized) or (
+#                                 cost_matrix[row, col] < p["MAX_DISTANCE_THRESHOLD"]
+#                             ):
+#                                 kf = self.kalman_filters[row]
+#                                 measure_vec = np.array([
+#                                     [measurements[col][0]],
+#                                     [measurements[col][1]],
+#                                     [measurements[col][2]]
+#                                 ], dtype=np.float32)
+#                                 kf.correct(measure_vec)
+
+#                                 x_corr, y_corr, theta_corr = measurements[col]
+#                                 ts = time.time()
+#                                 self.trajectories[row].append(
+#                                     (int(x_corr), int(y_corr), float(theta_corr), ts)
+#                                 )
+#                                 self._prune_traj(row, ts, p["TRAJECTORY_HISTORY_SECONDS"])
+#                                 avg_cost += cost_matrix[row, col] / p["MAX_TARGETS"]
+#                             else:
+#                                 self.tracking_stabilized = False
+#                                 self.tracking_counts = 0
+#                                 ts = time.time()
+#                                 self.trajectories[row].append((np.nan, np.nan, np.nan, ts))
+#                                 self._prune_traj(row, ts, p["TRAJECTORY_HISTORY_SECONDS"])
+
+#                     if avg_cost < p["MAX_DISTANCE_THRESHOLD"]:
+#                         self.tracking_counts += 1
+#                     else:
+#                         self.tracking_counts = 0
+
+#                     if self.tracking_counts >= p["MIN_TRACKING_COUNTS"] and not self.tracking_stabilized:
+#                         self.tracking_stabilized = True
+#                         print(f"[INFO] Tracking Stabilized (avg cost={avg_cost:.2f})")
+
+#                     # Draw overlays
+#                     if p["SHOW_BLOB"]:
+#                         self._draw_overlays(overlay_frame, self.trajectories, p)
+
+#                 # Show FG mask in corner
+#                 if p["SHOW_FG"]:
+#                     small = cv2.cvtColor(main_mask, cv2.COLOR_GRAY2BGR)
+#                     scale = 0.3
+#                     sw = int(small.shape[1]*scale)
+#                     sh = int(small.shape[0]*scale)
+#                     small = cv2.resize(small, (sw, sh), interpolation=cv2.INTER_AREA)
+#                     overlay_frame[0:sh, 0:sw] = small
+
+#                 # Show BG in corner
+#                 if p["SHOW_BG"]:
+#                     tmp_bg = cv2.cvtColor(bg_uint8, cv2.COLOR_GRAY2BGR)
+#                     scale = 0.3
+#                     sw = int(tmp_bg.shape[1]*scale)
+#                     sh = int(tmp_bg.shape[0]*scale)
+#                     small_bg = cv2.resize(tmp_bg, (sw, sh), interpolation=cv2.INTER_AREA)
+#                     x_offset = overlay_frame.shape[1] - sw
+#                     overlay_frame[0:sh, x_offset:overlay_frame.shape[1]] = small_bg
+
+#                 # Compute FPS
+#                 elapsed = time.time() - self.start_time
+#                 if elapsed > 0:
+#                     self.fps_list.append(self.frame_count / elapsed)
+
+#                 self.emit_frame(overlay_frame)
+#                 self._cleanup_locals(
+#                     frame, gray_frame, bg_uint8, fg_mask, kernel, main_mask,
+#                     overlay_frame, contours, final_contours
+#                 )
+#                 gc.collect()
+
+#         except Exception as e:
+#             print(f"[ERROR] Exception in worker: {e}")
+#             self._stop_flag = True
+#         finally:
+#             if self.cap:
+#                 self.cap.release()
+
+#         done_normally = not self._stop_flag
+#         self.finished_signal.emit(done_normally, self.fps_list)
+#         gc.collect()
+
+#     def _local_watershed_split(self, sub_gray: np.ndarray, sub_mask: np.ndarray, p: dict):
+#         """
+#         Perform a local watershed-based segmentation in the bounding box region
+#         to split merged objects.
+
+#         Steps:
+#         1) Erode sub_mask slightly to separate close objects.
+#         2) Distance transform the result.
+#         3) Threshold the distance map to get peaks.
+#         4) Convert those peaks to markers for watershed.
+#         5) Apply cv2.watershed on a 3-channel sub region => new markers.
+#         6) Build a refined mask from the marker labels (any label>0 => 1, boundary => 0).
+#         """
+#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+#         local_mask = cv2.morphologyEx(sub_mask, cv2.MORPH_ERODE, kernel, iterations=1)
+
+#         dist = cv2.distanceTransform(local_mask, cv2.DIST_L2, 3)
+#         cv2.normalize(dist, dist, 0, 1.0, cv2.NORM_MINMAX)
+
+#         # Local maxima => peaks
+#         _, peaks = cv2.threshold(dist, 0.3, 1.0, cv2.THRESH_BINARY)
+#         peaks_8u = (peaks * 255).astype(np.uint8)
+
+#         contours_peaks, _ = cv2.findContours(peaks_8u, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#         markers = np.zeros_like(sub_mask, dtype=np.int32)
+#         for i, cnt in enumerate(contours_peaks, 1):
+#             cv2.drawContours(markers, [cnt], -1, i, -1)
+
+#         sub_bgr = cv2.cvtColor(sub_gray, cv2.COLOR_GRAY2BGR)
+#         cv2.watershed(sub_bgr, markers)
+
+#         refined = np.zeros_like(sub_mask)
+#         refined[markers > 0] = 255
+#         refined[markers == -1] = 0
+
+#         del kernel, dist, peaks, peaks_8u, contours_peaks, markers, sub_bgr
+#         return refined
+
+#     def emit_frame(self, bgr_frame: np.ndarray):
+#         """
+#         Convert BGR to RGB and emit the frame signal.
+#         """
+#         rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+#         self.frame_signal.emit(rgb)
+
+#     def _cleanup_locals(self, *args):
+#         """Explicitly delete references to local large objects, then rely on gc.collect()."""
+#         for obj in args:
+#             del obj
+
+#     def _prune_traj(self, idx, current_ts, history_sec):
+#         """
+#         Keep only the last 'history_sec' seconds of trajectory.
+#         """
+#         self.trajectories[idx] = [
+#             (x, y, th, t) for (x, y, th, t) in self.trajectories[idx]
+#             if (current_ts - t) <= history_sec
+#         ]
+
+#     def _draw_overlays(self, frame_bgr: np.ndarray, trajectories: list, p: dict):
+#         """
+#         Draw circles, orientation lines, and short trajectories on frame_bgr.
+#         """
+#         for i, tlist in enumerate(trajectories):
+#             if not tlist:
+#                 continue
+#             x, y, theta, _ = tlist[-1]
+#             if np.isnan(x) or np.isnan(y):
+#                 continue
+
+#             color = p["TRAJECTORY_COLORS"][i % len(p["TRAJECTORY_COLORS"])]
+#             color_int = tuple(int(c) for c in color)
+
+#             cv2.circle(frame_bgr, (x, y), 10, color_int, -1)
+#             length = 20
+#             x_end = int(x + length * np.cos(theta))
+#             y_end = int(y + length * np.sin(theta))
+#             cv2.line(frame_bgr, (x, y), (x_end, y_end), color_int, 2)
+#             cv2.putText(frame_bgr, f"ID: {i}", (x+15, y-15),
+#                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_int, 2)
+
+#             # Draw trajectory lines
+#             for pt_i in range(1, len(tlist)):
+#                 pt1 = (tlist[pt_i-1][0], tlist[pt_i-1][1])
+#                 pt2 = (tlist[pt_i][0], tlist[pt_i][1])
+#                 if not (np.isnan(pt1[0]) or np.isnan(pt1[1]) or
+#                         np.isnan(pt2[0]) or np.isnan(pt2[1])):
+#                     cv2.line(frame_bgr, pt1, pt2, color_int, 2)
+
+
+# class MainWindow(QMainWindow):
+#     """
+#     A PySide2 GUI for multi-object tracking with local merges splitting.
+#     Includes brightness, contrast, gamma controls and memory safety.
+#     """
+#     def __init__(self):
+#         super().__init__()
+#         self.setWindowTitle("FlyTracking with Local Merge Splitting + Brightness/Contrast/Gamma")
+#         self.resize(1400, 800)
+
+#         # Video display
+#         self.video_label = QLabel(self)
+#         self.video_label.setAlignment(Qt.AlignCenter)
+#         self.video_label.setStyleSheet("background-color: black;")
+
+#         # Layout
+#         main_layout = QHBoxLayout()
+#         control_layout = QVBoxLayout()
+
+#         # File selection
+#         self.btn_file = QPushButton("Select Video File...")
+#         self.btn_file.clicked.connect(self.select_file)
+#         self.file_path_line = QLineEdit()
+#         self.file_path_line.setPlaceholderText("No file selected")
+
+#         file_layout = QHBoxLayout()
+#         file_layout.addWidget(self.btn_file)
+#         file_layout.addWidget(self.file_path_line)
+
+#         # Parameter panel
+#         param_group = QGroupBox("Parameters")
+#         form_layout = QFormLayout()
+
+#         self.spin_max_targets = QSpinBox()
+#         self.spin_max_targets.setRange(1, 20)
+#         self.spin_max_targets.setValue(4)
+#         form_layout.addRow("Max Targets", self.spin_max_targets)
+
+#         self.spin_threshold = QSpinBox()
+#         self.spin_threshold.setRange(0, 255)
+#         self.spin_threshold.setValue(50)
+#         form_layout.addRow("Threshold", self.spin_threshold)
+
+#         self.spin_morph_size = QSpinBox()
+#         self.spin_morph_size.setRange(1, 50)
+#         self.spin_morph_size.setValue(5)
+#         form_layout.addRow("Morph Kernel Size", self.spin_morph_size)
+
+#         self.spin_min_contour = QSpinBox()
+#         self.spin_min_contour.setRange(0, 20000)
+#         self.spin_min_contour.setValue(50)
+#         form_layout.addRow("Min Contour Area", self.spin_min_contour)
+
+#         self.spin_max_dist = QSpinBox()
+#         self.spin_max_dist.setRange(0, 1000)
+#         self.spin_max_dist.setValue(25)
+#         form_layout.addRow("Max Distance Thresh", self.spin_max_dist)
+
+#         self.spin_min_detect = QSpinBox()
+#         self.spin_min_detect.setRange(0, 1000)
+#         self.spin_min_detect.setValue(10)
+#         form_layout.addRow("Min Detection Counts", self.spin_min_detect)
+
+#         self.spin_min_track = QSpinBox()
+#         self.spin_min_track.setRange(0, 1000)
+#         self.spin_min_track.setValue(10)
+#         form_layout.addRow("Min Tracking Counts", self.spin_min_track)
+
+#         self.spin_traj_hist = QSpinBox()
+#         self.spin_traj_hist.setRange(0, 300)
+#         self.spin_traj_hist.setValue(5)
+#         form_layout.addRow("Trajectory History (sec)", self.spin_traj_hist)
+
+#         self.spin_kalman_noise = QDoubleSpinBox()
+#         self.spin_kalman_noise.setRange(0.0, 1.0)
+#         self.spin_kalman_noise.setSingleStep(0.01)
+#         self.spin_kalman_noise.setValue(0.03)
+#         form_layout.addRow("Kalman Noise Cov", self.spin_kalman_noise)
+
+#         self.spin_kalman_meas_noise = QDoubleSpinBox()
+#         self.spin_kalman_meas_noise.setRange(0.0, 1.0)
+#         self.spin_kalman_meas_noise.setSingleStep(0.01)
+#         self.spin_kalman_meas_noise.setValue(0.1)
+#         form_layout.addRow("Kalman Meas Cov", self.spin_kalman_meas_noise)
+
+#         self.spin_resize_factor = QDoubleSpinBox()
+#         self.spin_resize_factor.setRange(0.1, 1.0)
+#         self.spin_resize_factor.setSingleStep(0.1)
+#         self.spin_resize_factor.setValue(1.0)
+#         form_layout.addRow("Resize Factor", self.spin_resize_factor)
+
+#         self.spin_merge_area_thr = QSpinBox()
+#         self.spin_merge_area_thr.setRange(100, 100000)
+#         self.spin_merge_area_thr.setValue(1500)
+#         form_layout.addRow("Merge Area Threshold", self.spin_merge_area_thr)
+
+#         # Brightness / Contrast / Gamma
+#         self.spin_brightness = QDoubleSpinBox()
+#         self.spin_brightness.setRange(-255, 255)
+#         self.spin_brightness.setSingleStep(5.0)
+#         self.spin_brightness.setValue(0.0)
+#         form_layout.addRow("Brightness Offset", self.spin_brightness)
+
+#         self.spin_contrast = QDoubleSpinBox()
+#         self.spin_contrast.setRange(0.0, 3.0)
+#         self.spin_contrast.setSingleStep(0.1)
+#         self.spin_contrast.setValue(1.0)
+#         form_layout.addRow("Contrast Scale", self.spin_contrast)
+
+#         self.spin_gamma = QDoubleSpinBox()
+#         self.spin_gamma.setRange(0.1, 3.0)
+#         self.spin_gamma.setSingleStep(0.1)
+#         self.spin_gamma.setValue(1.0)
+#         form_layout.addRow("Gamma Correction", self.spin_gamma)
+
+#         # Checkboxes
+#         self.chk_show_fg = QCheckBox("Show Foreground Mask")
+#         self.chk_show_fg.setChecked(True)
+#         form_layout.addRow(self.chk_show_fg)
+
+#         self.chk_show_blob = QCheckBox("Show Blob Overlays")
+#         self.chk_show_blob.setChecked(True)
+#         form_layout.addRow(self.chk_show_blob)
+
+#         self.chk_show_bg = QCheckBox("Show Lightest Background")
+#         self.chk_show_bg.setChecked(True)
+#         form_layout.addRow(self.chk_show_bg)
+
+#         param_group.setLayout(form_layout)
+
+#         # Buttons
+#         self.btn_preview = QPushButton("Preview")
+#         self.btn_preview.setCheckable(True)
+#         self.btn_preview.clicked.connect(self.toggle_preview)
+
+#         self.btn_start_tracking = QPushButton("Full Tracking")
+#         self.btn_start_tracking.clicked.connect(self.start_full_tracking)
+
+#         self.btn_stop = QPushButton("Stop")
+#         self.btn_stop.clicked.connect(self.stop_tracking)
+
+#         control_layout.addLayout(file_layout)
+#         control_layout.addWidget(param_group)
+#         control_layout.addWidget(self.btn_preview)
+#         control_layout.addWidget(self.btn_start_tracking)
+#         control_layout.addWidget(self.btn_stop)
+#         control_layout.addStretch(1)
+
+#         main_layout.addWidget(self.video_label, stretch=3)
+#         main_layout.addLayout(control_layout, stretch=1)
+
+#         central_widget = QWidget()
+#         central_widget.setLayout(main_layout)
+#         self.setCentralWidget(central_widget)
+
+#         self.tracking_worker = None
+
+#     def select_file(self):
+#         file_path, _ = QFileDialog.getOpenFileName(
+#             self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mov)"
+#         )
+#         if file_path:
+#             self.file_path_line.setText(file_path)
+
+#     def get_parameters_dict(self):
+#         """
+#         Gather all UI parameters into a dictionary for the worker.
+#         """
+#         np.random.seed(42)
+#         max_targets = self.spin_max_targets.value()
+#         color_array = [tuple(c.tolist()) for c in np.random.randint(0, 255, (max_targets, 3))]
+
+#         p = {
+#             "MAX_TARGETS": max_targets,
+#             "THRESHOLD_VALUE": self.spin_threshold.value(),
+#             "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
+#             "MIN_CONTOUR_AREA": self.spin_min_contour.value(),
+#             "MAX_DISTANCE_THRESHOLD": self.spin_max_dist.value(),
+#             "MIN_DETECTION_COUNTS": self.spin_min_detect.value(),
+#             "MIN_TRACKING_COUNTS": self.spin_min_track.value(),
+#             "TRAJECTORY_HISTORY_SECONDS": self.spin_traj_hist.value(),
+#             "KALMAN_NOISE_COVARIANCE": float(self.spin_kalman_noise.value()),
+#             "KALMAN_MEASUREMENT_NOISE_COVARIANCE": float(self.spin_kalman_meas_noise.value()),
+#             "RESIZE_FACTOR": float(self.spin_resize_factor.value()),
+#             "MERGE_AREA_THRESHOLD": self.spin_merge_area_thr.value(),
+#             "BRIGHTNESS": float(self.spin_brightness.value()),
+#             "CONTRAST": float(self.spin_contrast.value()),
+#             "GAMMA": float(self.spin_gamma.value()),
+#             "SHOW_FG": self.chk_show_fg.isChecked(),
+#             "SHOW_BLOB": self.chk_show_blob.isChecked(),
+#             "SHOW_BG": self.chk_show_bg.isChecked(),
+#             "TRAJECTORY_COLORS": color_array
+#         }
+#         return p
+
+#     def toggle_preview(self, checked):
+#         if checked:
+#             # Start preview
+#             self.start_tracking(preview_mode=True)
+#             self.btn_preview.setText("Stop Preview")
+#         else:
+#             # Stop
+#             self.stop_tracking()
+#             self.btn_preview.setText("Preview")
+
+#     def start_full_tracking(self):
+#         if self.btn_preview.isChecked():
+#             self.btn_preview.setChecked(False)
+#             self.btn_preview.setText("Preview")
+#         self.start_tracking(preview_mode=False)
+
+#     def start_tracking(self, preview_mode: bool):
+#         video_path = self.file_path_line.text()
+#         if not video_path:
+#             QMessageBox.warning(self, "No file selected", "Please select a video file first!")
+#             if preview_mode:
+#                 self.btn_preview.setChecked(False)
+#                 self.btn_preview.setText("Preview")
+#             return
+
+#         if self.tracking_worker and self.tracking_worker.isRunning():
+#             QMessageBox.warning(self, "Worker busy", "A tracking thread is already running. Stop it first.")
+#             return
+
+#         self.tracking_worker = TrackingWorker(video_path)
+#         self.tracking_worker.set_parameters(self.get_parameters_dict())
+#         self.tracking_worker.frame_signal.connect(self.on_new_frame)
+#         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
+#         self.tracking_worker.start()
+
+#     def stop_tracking(self):
+#         if self.tracking_worker and self.tracking_worker.isRunning():
+#             self.tracking_worker.stop()
+
+#     @Slot(np.ndarray)
+#     def on_new_frame(self, rgb_frame: np.ndarray):
+#         """
+#         Convert RGB array -> QImage -> QPixmap -> video_label display.
+#         """
+#         h, w, c = rgb_frame.shape
+#         bytes_per_line = c * w
+#         qimg = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+#         self.video_label.setPixmap(QPixmap.fromImage(qimg))
+
+#     @Slot(bool, list)
+#     def on_tracking_finished(self, finished_normally: bool, fps_list: list):
+#         """
+#         Called when the worker is finished. If it's a full run,
+#         we can handle saving CSV or other post-processing here.
+#         """
+#         preview_mode = self.btn_preview.isChecked()
+#         if preview_mode:
+#             self.btn_preview.setChecked(False)
+#             self.btn_preview.setText("Preview")
+
+#         if finished_normally and not preview_mode:
+#             QMessageBox.information(
+#                 self, "Tracking Finished",
+#                 "Full run completed. You can implement CSV saving or final analysis here."
+#             )
+#             self.plot_fps(fps_list)
+
+#         gc.collect()
+
+#     def plot_fps(self, fps_list):
+#         """
+#         Basic FPS plot if enough data is available.
+#         """
+#         if len(fps_list) < 2:
+#             QMessageBox.information(self, "FPS Plot", "Not enough data to plot.")
+#             return
+#         plt.figure()
+#         plt.plot(fps_list, label="FPS")
+#         plt.xlabel("Frame Index")
+#         plt.ylabel("Frames Per Second")
+#         plt.title("Tracking FPS Over Time")
+#         plt.legend()
+#         plt.show()
+
+
+# def main():
+#     app = QApplication(sys.argv)
+#     window = MainWindow()
+#     window.show()
+#     sys.exit(app.exec_())
+
+
+# if __name__ == "__main__":
+#     main()
+
 """
-A production-ready Python script that uses PySide2 to provide a user-friendly UI for 
-multi-object tracking in a pre-recorded video (e.g., .mp4). This script is "feature complete":
-1. File selection via a dialog
-2. Parameter control (number of targets, threshold, morphological kernel, etc.)
-3. On-the-fly preview of how tracking changes with updated parameters (Preview Mode)
-4. Full tracking mode to process from start to finish, display optional overlays, and save results
-5. A single-file solution with minimal dependencies (besides PySide2, OpenCV, NumPy, SciPy, Matplotlib)
+Full Production-Ready PySide2 Script for Multi-Fly Tracking with:
+1) Brightness/Contrast/Gamma
+2) Lightest-Pixel Background
+3) Local "Conservative" Splitting for Merges (heavy erosion) applied only after detection is stable
+4) Saving Trajectories to a User-Specified CSV
+5) Memory-Safe Practices (explicit cleanup + gc)
 
 Usage:
 ------
-    python tracking_ui_pyside2.py
-
-Dependencies:
--------------
-    - Python 3.9+
-    - PySide2
-    - OpenCV (cv2)
-    - NumPy
-    - SciPy
-    - Matplotlib
-
-Explanation of Key Components:
-------------------------------
-1) MainWindow (QMainWindow): 
-   - Houses all UI elements. The left panel displays the video frames (live updates).
-   - The right panel (a QWidget) contains controls: file selection button, parameters (sliders/spin boxes),
-     checkboxes for optional overlays, and buttons for Preview / Start Tracking / Stop / Save, etc.
-
-2) TrackingWorker (QThread):
-   - Runs the frame-by-frame tracking in a separate thread so that the UI remains responsive.
-   - On each frame, it applies the user-set parameters (threshold, morphological kernel, etc.).
-   - Uses a "lightest background" model plus the Hungarian algorithm with Kalman filters.
-   - Sends signals back to the MainWindow to update the displayed frame with overlays.
-
-3) Preview vs Full Tracking:
-   - Preview Mode: Runs continuously from the start of the video (or from last frame if configured),
-     letting the user see how parameter changes affect detection/tracking in near real-time.
-     The background model will keep updating, so large parameter changes may look odd if partial
-     progress is already made. (One may implement logic to reset the background model if desired.)
-   - Full Tracking Mode: Processes from the first frame to the end, collecting all trajectory data.
-     Results are saved to "trajectories.csv" after it completes or is stopped.
-
-4) Optional Overlays:
-   - Foreground Mask
-   - Blob Detection / Ellipse Overlays
-   - Lightest Background
-   - Each overlay can be toggled on/off with checkboxes.
-
-5) Saving Results:
-   - After Full Tracking finishes, the script automatically saves results to "trajectories.csv".
-   - Optionally, an FPS plot is displayed at the end.
-
-6) Parameter Adjustments on the Fly:
-   - Changes to the UI parameter widgets (spin boxes, sliders, etc.) are immediately propagated to 
-     the worker thread, which will adjust its logic for the next frame.
-
-Important Notes:
-----------------
-- This script is a simplified demonstration of how to build a PySide2 UI. 
-- For real production usage, you may further refine threading, error handling, and parameter
-  synchronization to best suit your workflow.
+1. Install dependencies: PySide2, OpenCV, NumPy, SciPy, matplotlib.
+2. Run: python multi_fly_tracking.py
+3. In the UI:
+   - "Select Video File..." for your .mp4 or .avi
+   - Set parameters (threshold, morphological kernel size, min contour area, etc.)
+   - Adjust brightness/contrast/gamma as needed
+   - Optionally set "Output CSV Path" to store final trajectories
+   - "Preview" toggles live preview
+   - "Full Tracking" processes entire video until the end or user stops
+   - A heavier morphological approach is used locally only for suspicious merges,
+     but ONLY after we've successfully detected all targets for the first time.
 """
 
 import sys
 import time
+import gc
 import csv
 import numpy as np
 import cv2
@@ -603,7 +1387,7 @@ from scipy.optimize import linear_sum_assignment
 import matplotlib.pyplot as plt
 
 from PySide2.QtCore import (
-    Qt, QThread, Signal, Slot, QMutex, QWaitCondition, QTimer
+    Qt, QThread, Signal, Slot, QMutex
 )
 from PySide2.QtGui import (
     QImage, QPixmap
@@ -611,103 +1395,129 @@ from PySide2.QtGui import (
 from PySide2.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout,
     QHBoxLayout, QFileDialog, QSpinBox, QDoubleSpinBox, QCheckBox, QMessageBox,
-    QGroupBox, QFormLayout, QSlider, QLineEdit
+    QGroupBox, QFormLayout, QLineEdit
 )
+
+
+def apply_image_adjustments(gray_frame: np.ndarray,
+                            brightness: float,
+                            contrast: float,
+                            gamma: float) -> np.ndarray:
+    """
+    Apply brightness, contrast, and gamma corrections to a grayscale image.
+
+    Parameters
+    ----------
+    gray_frame : np.ndarray
+        8-bit grayscale frame.
+    brightness : float
+        Pixel offset added after contrast scaling. Negative darkens, positive brightens.
+    contrast : float
+        Pixel scale factor. 1.0 => no change, >1 => more contrast, <1 => less contrast.
+    gamma : float
+        Gamma correction factor. 1.0 => no change, <1 => darkens midtones, >1 => brightens midtones.
+
+    Returns
+    -------
+    adjusted : np.ndarray
+        The corrected 8-bit grayscale image.
+    """
+    # 1) Brightness/Contrast
+    adjusted = cv2.convertScaleAbs(gray_frame, alpha=contrast, beta=brightness)
+
+    # 2) Gamma
+    if abs(gamma - 1.0) > 1e-3:
+        look_up_table = np.array([
+            np.clip(((i / 255.0) ** (1.0 / gamma)) * 255.0, 0, 255)
+            for i in range(256)
+        ], dtype=np.uint8)
+        adjusted = cv2.LUT(adjusted, look_up_table)
+
+    return adjusted
 
 
 class TrackingWorker(QThread):
     """
-    A QThread worker that performs multi-object tracking on a video file using 
-    a lightest-background model, morphological ops, and Kalman filters with the 
-    Hungarian assignment.
-    
-    Parameters
-    ----------
-    video_path : str
-        Path to the video file to track.
+    A QThread worker for multi-object tracking with:
+      - Lightest-pixel background modeling
+      - Local "conservative" morphological splitting
+      - Kalman + Hungarian assignment
+      - Optional brightness/contrast/gamma
+
+    Signals
+    -------
+    frame_signal : np.ndarray
+        Emitted with the current overlay frame (RGB).
+    finished_signal : (bool, list, list)
+        (finished_normally, fps_list, final_trajectories)
+        - finished_normally : True if end-of-video, False if user forced stop
+        - fps_list : List of FPS values over frames
+        - final_trajectories : The worker's trajectories for each target
     """
-    # Signals to update the MainWindow's UI
-    frame_signal = Signal(np.ndarray)  # emits the current (overlayed) frame as a NumPy BGR image
-    finished_signal = Signal(bool, list)  
-    # finished_signal emits a tuple: 
-    #   bool -> whether or not the tracking finished normally (True) or was stopped (False)
-    #   list -> a list of FPS values across frames, for potential plotting
+    frame_signal = Signal(np.ndarray)
+    finished_signal = Signal(bool, list, list)  # includes trajectories
 
     def __init__(self, video_path: str, parent=None):
         super().__init__(parent)
         self.video_path = video_path
-        self.cap = None
-
-        # We store the parameters externally to allow on-the-fly adjustments
         self.params_mutex = QMutex()
         self.parameters = {}
-        
-        # For stopping the thread gracefully
-        self._stop_flag = False
 
-        # For storing trajectories
-        self.trajectories = []
+        self._stop_flag = False
+        self.cap = None
+
+        # Kalman/tracking structures
         self.kalman_filters = []
         self.track_ids = []
-        self.detection_initialized = False
+        self.trajectories = []
+
+        # Background model
+        self.background_model_lightest = None
+
+        # Tracking flags
+        self.detection_initialized = False  # becomes True after all targets detected for MIN_DETECTION_COUNTS
         self.tracking_stabilized = False
         self.detection_counts = 0
         self.tracking_counts = 0
 
-        self.background_model_lightest = None
-        self.conservative_used = False
-
+        # Others
         self.fps_list = []
         self.frame_count = 0
         self.start_time = 0
 
     def set_parameters(self, new_params: dict):
-        """
-        Update tracking parameters in a thread-safe manner.
-        
-        Parameters
-        ----------
-        new_params : dict
-            Dictionary of the updated parameters.
-        """
+        """Thread-safe parameter update."""
         self.params_mutex.lock()
         self.parameters = new_params
         self.params_mutex.unlock()
 
-    def stop(self):
-        """
-        Signal the thread to stop as soon as possible.
-        """
-        self._stop_flag = True
-
     def get_current_params(self):
-        """
-        Safely retrieve the current parameters dictionary.
-        """
         self.params_mutex.lock()
         p = dict(self.parameters)
         self.params_mutex.unlock()
         return p
 
-    def init_kalman_filters(self):
-        """
-        Initialize the Kalman filters based on the number of targets set in parameters.
-        """
-        p = self.get_current_params()
-        max_targets = p["MAX_TARGETS"]
+    def stop(self):
+        """Signal thread to end ASAP."""
+        self._stop_flag = True
+
+    def init_kalman_filters(self, p):
+        """Initialize multiple Kalman filters, one per target."""
         kf_list = []
-        for _ in range(max_targets):
+        for _ in range(p["MAX_TARGETS"]):
             kf = cv2.KalmanFilter(5, 3)
-            # Measurement matrix: Maps state to measurements (x, y, theta)
-            kf.measurementMatrix = np.array([[1, 0, 0, 0, 0],
-                                             [0, 1, 0, 0, 0],
-                                             [0, 0, 1, 0, 0]], np.float32)
-            # Transition matrix
-            kf.transitionMatrix = np.array([[1, 0, 0, 1, 0],
-                                            [0, 1, 0, 0, 1],
-                                            [0, 0, 1, 0, 0],
-                                            [0, 0, 0, 1, 0],
-                                            [0, 0, 0, 0, 1]], np.float32)
+            kf.measurementMatrix = np.array([
+                [1, 0, 0, 0, 0],
+                [0, 1, 0, 0, 0],
+                [0, 0, 1, 0, 0]
+            ], np.float32)
+            kf.transitionMatrix = np.array([
+                [1, 0, 0, 1, 0],
+                [0, 1, 0, 0, 1],
+                [0, 0, 1, 0, 0],
+                [0, 0, 0, 1, 0],
+                [0, 0, 0, 0, 1]
+            ], np.float32)
             kf.processNoiseCov = np.eye(5, dtype=np.float32) * p["KALMAN_NOISE_COVARIANCE"]
             kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * p["KALMAN_MEASUREMENT_NOISE_COVARIANCE"]
             kf.errorCovPre = np.eye(5, dtype=np.float32)
@@ -715,290 +1525,359 @@ class TrackingWorker(QThread):
         return kf_list
 
     def run(self):
-        """
-        The main loop of the tracking thread. Opens the video, processes frames, 
-        and emits signals for the UI to display frames. 
-        """
-        # Reset stop flag
+        """Main thread loop for reading frames, applying detection+tracking, and emitting results."""
+        gc.collect()
         self._stop_flag = False
+        p = self.get_current_params()
 
-        # Attempt to open capture
+        # Attempt to open
         self.cap = cv2.VideoCapture(self.video_path)
         if not self.cap.isOpened():
             print(f"[ERROR] Cannot open video file: {self.video_path}")
-            self.finished_signal.emit(True, [])  # emit 'finished' to end gracefully
+            self.finished_signal.emit(True, [], [])
             return
 
-        # Re-init state in case this worker is re-run
-        p = self.get_current_params()
-        self.kalman_filters = self.init_kalman_filters()
+        # Re-init
+        self.background_model_lightest = None
+        self.kalman_filters = self.init_kalman_filters(p)
         self.track_ids = np.arange(p["MAX_TARGETS"])
         self.trajectories = [[] for _ in range(p["MAX_TARGETS"])]
-        self.background_model_lightest = None
+
         self.detection_initialized = False
         self.tracking_stabilized = False
         self.detection_counts = 0
         self.tracking_counts = 0
-        self.conservative_used = False
-        self.fps_list.clear()
+
+        self.fps_list = []
         self.frame_count = 0
         self.start_time = time.time()
 
-        while not self._stop_flag:
-            ret, frame = self.cap.read()
-            if not ret:
-                # No more frames or read error
-                break
+        try:
+            while not self._stop_flag:
+                ret, frame = self.cap.read()
+                if not ret:
+                    break
 
-            current_params = self.get_current_params()
-            self.frame_count += 1
+                self.frame_count += 1
+                current_params = self.get_current_params()
 
-            # Convert to grayscale
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                # Optionally resize
+                if current_params.get("RESIZE_FACTOR", 1.0) < 1.0:
+                    rsz = current_params["RESIZE_FACTOR"]
+                    new_w = int(frame.shape[1] * rsz)
+                    new_h = int(frame.shape[0] * rsz)
+                    frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-            # Initialize background model if None
-            if self.background_model_lightest is None:
-                self.background_model_lightest = gray_frame.astype(np.float32)
-                # Show initial frame if the user wants any overlay
-                overlay_frame = frame
-                self.emit_frame(overlay_frame)
-                continue
+                # Convert to gray
+                gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            # Update the background model
-            self.background_model_lightest = np.maximum(self.background_model_lightest, gray_frame.astype(np.float32))
-            bg_uint8 = cv2.convertScaleAbs(self.background_model_lightest)
+                # Brightness/Contrast/Gamma
+                br = current_params.get("BRIGHTNESS", 0.0)
+                ct = current_params.get("CONTRAST", 1.0)
+                gm = current_params.get("GAMMA", 1.0)
+                gray_frame = apply_image_adjustments(gray_frame, br, ct, gm)
 
-            # Foreground detection
-            fg_mask = cv2.absdiff(bg_uint8, gray_frame)
-            _, fg_mask = cv2.threshold(fg_mask, current_params["THRESHOLD_VALUE"], 255, cv2.THRESH_BINARY)
-
-            # Morph
-            k_size = current_params["MORPH_KERNEL_SIZE"]
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
-            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
-            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel)
-
-            # Conservative mask
-            split_mask = cv2.erode(fg_mask, kernel, iterations=2)
-
-            # Find contours
-            contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            conservative_contours, _ = cv2.findContours(split_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            measurements = []
-            sizes = []
-
-            # Ellipse fitting on normal mask
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                if area < current_params["MIN_CONTOUR_AREA"]:
+                # Initialize background if needed
+                if self.background_model_lightest is None:
+                    self.background_model_lightest = gray_frame.astype(np.float32)
+                    # Show first frame
+                    self.emit_frame(frame)
+                    self._cleanup_locals(frame, gray_frame)
                     continue
-                if len(cnt) >= 5:
-                    ellipse = cv2.fitEllipse(cnt)
-                    (x, y), (MA, ma), angle = ellipse
-                    angle_radians = np.deg2rad(angle)
-                    measurements.append(np.array([x, y, angle_radians], dtype=np.float32))
-                    sizes.append(area)
 
-            # Keep largest if needed
-            if len(measurements) > current_params["MAX_TARGETS"]:
-                sorted_idx = np.argsort(sizes)[::-1]
-                measurements = [measurements[i] for i in sorted_idx[:current_params["MAX_TARGETS"]]]
+                # Update "lightest" background
+                self.background_model_lightest = np.maximum(self.background_model_lightest,
+                                                            gray_frame.astype(np.float32))
+                bg_uint8 = cv2.convertScaleAbs(self.background_model_lightest)
 
-            # If fewer than needed, try conservative mask
-            if len(measurements) < current_params["MAX_TARGETS"]:
-                self.conservative_used = True
-                measurements = []
-                sizes = []
-                for cnt in conservative_contours:
+                # Liberal mask
+                fg_mask = cv2.absdiff(bg_uint8, gray_frame)
+                _, fg_mask = cv2.threshold(fg_mask, current_params["THRESHOLD_VALUE"], 255, cv2.THRESH_BINARY)
+
+                # Morphological open/close
+                ksize = current_params["MORPH_KERNEL_SIZE"]
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+                fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
+                fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel)
+
+                # We'll do an initial set of contours without local-splitting
+                main_mask = fg_mask.copy()
+                contours, _ = cv2.findContours(main_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                # Quick ellipse fit to see how many targets we get
+                measurements_firstpass = []
+                sizes_firstpass = []
+                for cnt in contours:
                     area = cv2.contourArea(cnt)
                     if area < current_params["MIN_CONTOUR_AREA"]:
                         continue
                     if len(cnt) >= 5:
                         ellipse = cv2.fitEllipse(cnt)
-                        (x, y), (MA, ma), angle = ellipse
-                        angle_radians = np.deg2rad(angle)
-                        measurements.append(np.array([x, y, angle_radians], dtype=np.float32))
+                        (cx, cy), (MA, ma), angle = ellipse
+                        measurements_firstpass.append(np.array([cx, cy, np.deg2rad(angle)], dtype=np.float32))
+                        sizes_firstpass.append(area)
+
+                # If we found more than needed, keep largest
+                if len(measurements_firstpass) > current_params["MAX_TARGETS"]:
+                    sorted_idx = np.argsort(sizes_firstpass)[::-1]
+                    measurements_firstpass = [measurements_firstpass[i] for i in sorted_idx[:current_params["MAX_TARGETS"]]]
+
+                # Update detection counts
+                if len(measurements_firstpass) == current_params["MAX_TARGETS"]:
+                    self.detection_counts += 1
+                else:
+                    self.detection_counts = 0
+
+                if self.detection_counts >= current_params["MIN_DETECTION_COUNTS"]:
+                    self.detection_initialized = True
+
+                # Now apply local conservative splitting *only if* detection_initialized
+                if self.detection_initialized:
+                    # Identify suspicious merges
+                    merge_area_thr = current_params.get("MERGE_AREA_THRESHOLD", 1500)
+                    total_contours = sum(1 for cnt in contours if cv2.contourArea(cnt) > 0)
+                    suspicious_bboxes = []
+                    for cnt in contours:
+                        area = cv2.contourArea(cnt)
+                        if area < 1:
+                            continue
+                        x, y, w, h = cv2.boundingRect(cnt)
+                        # If area is large or if too few contours => suspicious
+                        if area > merge_area_thr or total_contours < current_params["MAX_TARGETS"]:
+                            suspicious_bboxes.append((x, y, w, h))
+
+                    # Locally refine suspicious merges
+                    for (bx, by, bw, bh) in suspicious_bboxes:
+                        sub_mask = main_mask[by:by+bh, bx:bx+bw]
+                        if np.count_nonzero(sub_mask) < 10:
+                            continue
+                        # Use a heavier morphological approach
+                        refined_mask = self._local_conservative_split(sub_mask, current_params)
+                        main_mask[by:by+bh, bx:bx+bw] = refined_mask
+
+                # Final measurement pass
+                final_contours, _ = cv2.findContours(main_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                measurements, sizes = [], []
+                for cnt in final_contours:
+                    area = cv2.contourArea(cnt)
+                    if area < current_params["MIN_CONTOUR_AREA"]:
+                        continue
+                    if len(cnt) >= 5:
+                        ellipse = cv2.fitEllipse(cnt)
+                        (cx, cy), (MA, ma), angle = ellipse
+                        measurements.append(np.array([cx, cy, np.deg2rad(angle)], dtype=np.float32))
                         sizes.append(area)
+
                 if len(measurements) > current_params["MAX_TARGETS"]:
                     sorted_idx = np.argsort(sizes)[::-1]
                     measurements = [measurements[i] for i in sorted_idx[:current_params["MAX_TARGETS"]]]
-            else:
-                self.conservative_used = False
 
-            # Check if detection is complete
-            if len(measurements) == current_params["MAX_TARGETS"]:
-                self.detection_counts += 1
-            else:
-                self.detection_counts = 0
-
-            if self.detection_counts >= current_params["MIN_DETECTION_COUNTS"]:
-                self.detection_initialized = True
-
-            # Tracking with Kalman filters
-            overlay_frame = frame.copy()  # We will draw overlays on this
-            if self.detection_initialized and measurements:
-                # Possibly (re)initialize the KF states if at the start
-                if self.frame_count == 1:
-                    h, w, _ = frame.shape
-                    for kf in self.kalman_filters:
-                        kf.statePre = np.array([
-                            np.random.randint(0, w),
-                            np.random.randint(0, h),
-                            0, 0, 0
-                        ], dtype=np.float32)
-                        kf.statePost = kf.statePre.copy()
-
-                # Predict
-                predicted_positions = []
-                for i, kf in enumerate(self.kalman_filters):
-                    pred = kf.predict()
-                    predicted_positions.append(pred[:3].flatten())
-
-                predicted_positions = np.array(predicted_positions)  # shape = (max_targets, 3)
-
-                # Build cost matrix
-                cost_matrix = np.zeros((current_params["MAX_TARGETS"], len(measurements)), dtype=np.float32)
-                for i, pred_pos in enumerate(predicted_positions):
-                    for j, meas in enumerate(measurements):
-                        pos_cost = distance.euclidean(pred_pos[:2], meas[:2])
-                        angle_cost = abs(pred_pos[2] - meas[2])
-                        angle_cost = min(angle_cost, 2*np.pi - angle_cost)
-                        cost_matrix[i, j] = pos_cost + angle_cost
-
-                row_idx, col_idx = linear_sum_assignment(cost_matrix)
-
-                avg_cost = 0.0
-                for row, col in zip(row_idx, col_idx):
-                    if row < current_params["MAX_TARGETS"] and col < len(measurements):
-                        if (not self.tracking_stabilized) or (cost_matrix[row, col] < current_params["MAX_DISTANCE_THRESHOLD"]):
-                            kf = self.kalman_filters[row]
-                            measurement_vector = np.array([
-                                [measurements[col][0]],
-                                [measurements[col][1]],
-                                [measurements[col][2]]
+                # Tracking pipeline
+                overlay_frame = frame.copy()
+                if self.detection_initialized and measurements:
+                    if self.frame_count == 1:
+                        h_, w_ = gray_frame.shape
+                        for kf in self.kalman_filters:
+                            kf.statePre = np.array([
+                                np.random.randint(0, w_),
+                                np.random.randint(0, h_),
+                                0, 0, 0
                             ], dtype=np.float32)
-                            kf.correct(measurement_vector)
+                            kf.statePost = kf.statePre.copy()
 
-                            x_corr, y_corr, t_corr = measurements[col]
-                            ts = time.time()
-                            self.trajectories[row].append((int(x_corr), int(y_corr), float(t_corr), ts))
-                            # prune old
-                            self.trajectories[row] = [
-                                (xx, yy, th, tt) for (xx, yy, th, tt) in self.trajectories[row]
-                                if (ts - tt) <= current_params["TRAJECTORY_HISTORY_SECONDS"]
-                            ]
-                            avg_cost += cost_matrix[row, col]/current_params["MAX_TARGETS"]
-                        else:
-                            self.tracking_stabilized = False
-                            self.tracking_counts = 0
-                            # Insert NaNs
-                            ts = time.time()
-                            self.trajectories[row].append((np.nan, np.nan, np.nan, ts))
-                            self.trajectories[row] = [
-                                (xx, yy, th, tt) for (xx, yy, th, tt) in self.trajectories[row]
-                                if (ts - tt) <= current_params["TRAJECTORY_HISTORY_SECONDS"]
-                            ]
+                    # Predict
+                    predicted_positions = []
+                    for kf in self.kalman_filters:
+                        pred = kf.predict()
+                        predicted_positions.append(pred[:3].flatten())
+                    predicted_positions = np.array(predicted_positions, dtype=np.float32)
 
-                if avg_cost < current_params["MAX_DISTANCE_THRESHOLD"]:
-                    self.tracking_counts += 1
-                else:
-                    self.tracking_counts = 0
+                    # Hungarian assignment
+                    cost_matrix = np.zeros((current_params["MAX_TARGETS"], len(measurements)), dtype=np.float32)
+                    for i, pred_pos in enumerate(predicted_positions):
+                        for j, meas in enumerate(measurements):
+                            pos_cost = distance.euclidean(pred_pos[:2], meas[:2])
+                            angle_diff = abs(pred_pos[2] - meas[2])
+                            angle_diff = min(angle_diff, 2*np.pi - angle_diff)
+                            cost_matrix[i, j] = pos_cost + angle_diff
 
-                if self.tracking_counts >= current_params["MIN_TRACKING_COUNTS"] and not self.tracking_stabilized:
-                    self.tracking_stabilized = True
-                    print(f"[INFO] Tracking Stabilized with Average Cost: {avg_cost:.2f}")
+                    row_idx, col_idx = linear_sum_assignment(cost_matrix)
+                    avg_cost = 0.0
+                    for row, col in zip(row_idx, col_idx):
+                        if row < current_params["MAX_TARGETS"] and col < len(measurements):
+                            if (not self.tracking_stabilized) or (cost_matrix[row, col] < current_params["MAX_DISTANCE_THRESHOLD"]):
+                                kf = self.kalman_filters[row]
+                                measure_vec = np.array([
+                                    [measurements[col][0]],
+                                    [measurements[col][1]],
+                                    [measurements[col][2]]
+                                ], dtype=np.float32)
+                                kf.correct(measure_vec)
+                                x_corr, y_corr, theta_corr = measurements[col]
+                                ts = time.time()
+                                self.trajectories[row].append((int(x_corr), int(y_corr), float(theta_corr), ts))
+                                self._prune_traj(row, ts, current_params["TRAJECTORY_HISTORY_SECONDS"])
+                                avg_cost += cost_matrix[row, col] / current_params["MAX_TARGETS"]
+                            else:
+                                self.tracking_stabilized = False
+                                self.tracking_counts = 0
+                                ts = time.time()
+                                self.trajectories[row].append((np.nan, np.nan, np.nan, ts))
+                                self._prune_traj(row, ts, current_params["TRAJECTORY_HISTORY_SECONDS"])
 
-                # Draw
-                if current_params["SHOW_BLOB"]:
-                    for i, tlist in enumerate(self.trajectories):
-                        if not tlist:
-                            continue
-                        x, y, theta, ts = tlist[-1]
-                        if not (np.isnan(x) or np.isnan(y)):
-                            color = current_params["TRAJECTORY_COLORS"][i % len(current_params["TRAJECTORY_COLORS"])]
-                            cv2.circle(overlay_frame, (x, y), 10, color, -1)
-                            length = 20
-                            x_end = int(x + length * np.cos(theta))
-                            y_end = int(y + length * np.sin(theta))
-                            cv2.line(overlay_frame, (x, y), (x_end, y_end), color, 2)
-                            cv2.putText(overlay_frame, f"ID: {i}", (x+15, y-15),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-                            # Draw trajectory lines
-                            for idx_pt in range(1, len(tlist)):
-                                pt1 = (tlist[idx_pt-1][0], tlist[idx_pt-1][1])
-                                pt2 = (tlist[idx_pt][0], tlist[idx_pt][1])
-                                if (not np.isnan(pt1[0]) and not np.isnan(pt1[1]) and 
-                                    not np.isnan(pt2[0]) and not np.isnan(pt2[1])):
-                                    cv2.line(overlay_frame, pt1, pt2, color, 2)
+                    if avg_cost < current_params["MAX_DISTANCE_THRESHOLD"]:
+                        self.tracking_counts += 1
+                    else:
+                        self.tracking_counts = 0
 
-            # If user wants to see Foreground
-            if current_params["SHOW_FG"]:
-                if self.conservative_used:
-                    # Show the more conservative version
-                    mask_vis = cv2.cvtColor(split_mask, cv2.COLOR_GRAY2BGR)
-                else:
-                    mask_vis = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
-                small_mask = cv2.resize(mask_vis, (mask_vis.shape[1]//2, mask_vis.shape[0]//2))
-                # top-left corner overlay for demonstration
-                overlay_frame[0:small_mask.shape[0], 0:small_mask.shape[1], :] = small_mask
+                    if self.tracking_counts >= current_params["MIN_TRACKING_COUNTS"] and not self.tracking_stabilized:
+                        self.tracking_stabilized = True
+                        print(f"[INFO] Tracking Stabilized (avg cost={avg_cost:.2f})")
 
-            # If user wants to see Lightest Background
-            if current_params["SHOW_BG"]:
-                bg_vis = cv2.cvtColor(bg_uint8, cv2.COLOR_GRAY2BGR)
-                small_bg = cv2.resize(bg_vis, (bg_vis.shape[1]//2, bg_vis.shape[0]//2))
-                # top-right corner overlay
-                x_offset = overlay_frame.shape[1] - small_bg.shape[1]
-                overlay_frame[0:small_bg.shape[0], x_offset:overlay_frame.shape[1], :] = small_bg
+                    # Draw overlays
+                    if current_params["SHOW_BLOB"]:
+                        self._draw_overlays(overlay_frame, self.trajectories, current_params)
 
-            # Calculate FPS
-            elapsed_time = time.time() - self.start_time
-            if elapsed_time > 0:
-                self.fps_list.append(self.frame_count/elapsed_time)
+                # Foreground mask corner
+                if current_params["SHOW_FG"]:
+                    mask_bgr = cv2.cvtColor(main_mask, cv2.COLOR_GRAY2BGR)
+                    scale = 0.3
+                    sw = int(mask_bgr.shape[1]*scale)
+                    sh = int(mask_bgr.shape[0]*scale)
+                    small_mask = cv2.resize(mask_bgr, (sw, sh), interpolation=cv2.INTER_AREA)
+                    overlay_frame[0:sh, 0:sw] = small_mask
 
-            # Emit the overlay frame
-            self.emit_frame(overlay_frame)
+                # Lightest background corner
+                if current_params["SHOW_BG"]:
+                    bg_bgr = cv2.cvtColor(bg_uint8, cv2.COLOR_GRAY2BGR)
+                    scale = 0.3
+                    sw = int(bg_bgr.shape[1]*scale)
+                    sh = int(bg_bgr.shape[0]*scale)
+                    small_bg = cv2.resize(bg_bgr, (sw, sh), interpolation=cv2.INTER_AREA)
+                    x_offset = overlay_frame.shape[1] - sw
+                    overlay_frame[0:sh, x_offset:overlay_frame.shape[1]] = small_bg
 
-            # Sleep a tiny bit if you want to slow down (or remove to go as fast as possible)
-            # time.sleep(0.001)
+                # Compute FPS
+                elapsed = time.time() - self.start_time
+                if elapsed > 0:
+                    self.fps_list.append(self.frame_count / elapsed)
 
-        self.cap.release()
+                # Emit frame
+                self.emit_frame(overlay_frame)
+                self._cleanup_locals(
+                    frame, gray_frame, bg_uint8, fg_mask, kernel, main_mask,
+                    overlay_frame, contours, final_contours
+                )
+                gc.collect()
+
+        except Exception as e:
+            print(f"[ERROR] Exception in worker thread: {e}")
+            self._stop_flag = True
+        finally:
+            if self.cap:
+                self.cap.release()
+
         done_normally = (not self._stop_flag)
-        self.finished_signal.emit(done_normally, self.fps_list)
+        # Emit final results, including trajectories
+        self.finished_signal.emit(done_normally, self.fps_list, self.trajectories)
+        gc.collect()
 
-    def emit_frame(self, frame: np.ndarray):
+    def _local_conservative_split(self, sub_mask: np.ndarray, p: dict) -> np.ndarray:
         """
-        Convert a BGR NumPy array to a QImage and emit it via frame_signal.
-        
-        Parameters
-        ----------
-        frame : np.ndarray
-            The BGR image to display.
+        A heavier morphological approach to separate merges locally.
+        For instance, multiple erosions with a slightly bigger kernel.
+
+        sub_mask : np.ndarray, local portion of the main mask in suspicious bounding box
+        p : dict, user parameters
+
+        Returns
+        -------
+        refined : np.ndarray
+            The updated sub-mask after "conservative" morphological ops.
         """
-        self.frame_signal.emit(frame)
+        # Let user specify how big the kernel or how many iterations for this local step
+        ksize = p.get("CONSERVATIVE_KERNEL_SIZE", 5)
+        erode_iterations = p.get("CONSERVATIVE_ERODE_ITER", 2)
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        # Heavier erode
+        refined = cv2.erode(sub_mask, kernel, iterations=erode_iterations)
+
+        # Possibly do an additional open to remove small lumps
+        refined = cv2.morphologyEx(refined, cv2.MORPH_OPEN, kernel)
+
+        return refined
+
+    def emit_frame(self, bgr_frame: np.ndarray):
+        """Convert BGR to RGB, then emit via frame_signal."""
+        rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+        self.frame_signal.emit(rgb_frame)
+
+    def _cleanup_locals(self, *args):
+        """Delete references to large objects, then rely on gc."""
+        for obj in args:
+            del obj
+
+    def _prune_traj(self, idx, current_ts, history_sec):
+        """Keep only the last 'history_sec' seconds of trajectory."""
+        self.trajectories[idx] = [
+            (x, y, th, t) for (x, y, th, t) in self.trajectories[idx]
+            if (current_ts - t) <= history_sec
+        ]
+
+    def _draw_overlays(self, frame_bgr: np.ndarray, trajectories: list, p: dict):
+        """
+        Draw circles, orientation lines, and short trajectories on frame_bgr.
+        """
+        for i, tlist in enumerate(trajectories):
+            if not tlist:
+                continue
+            x, y, theta, _ = tlist[-1]
+            if np.isnan(x) or np.isnan(y):
+                continue
+
+            color = p["TRAJECTORY_COLORS"][i % len(p["TRAJECTORY_COLORS"])]
+            color_int = tuple(int(c) for c in color)
+
+            cv2.circle(frame_bgr, (x, y), 10, color_int, -1)
+            length = 20
+            x_end = int(x + length * np.cos(theta))
+            y_end = int(y + length * np.sin(theta))
+            cv2.line(frame_bgr, (x, y), (x_end, y_end), color_int, 2)
+            cv2.putText(frame_bgr, f"ID: {i}", (x+15, y-15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_int, 2)
+
+            # Trajectory lines
+            for pt_i in range(1, len(tlist)):
+                pt1 = (tlist[pt_i-1][0], tlist[pt_i-1][1])
+                pt2 = (tlist[pt_i][0], tlist[pt_i][1])
+                if not (np.isnan(pt1[0]) or np.isnan(pt1[1]) or
+                        np.isnan(pt2[0]) or np.isnan(pt2[1])):
+                    cv2.line(frame_bgr, pt1, pt2, color_int, 2)
 
 
 class MainWindow(QMainWindow):
     """
-    The main application window that presents:
-        - A video display area (QLabel)
-        - A parameter panel (spin boxes, checkboxes)
-        - Buttons for file selection, preview, full run, stopping, etc.
+    Main PySide2 GUI:
+      - File selection
+      - Parameter controls
+      - Output CSV path
+      - Preview or Full Tracking
+      - Save final trajectories to CSV if Full Tracking completes.
     """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Fly Tracking UI (PySide2)")
-        self.resize(1400, 800)
+        self.setWindowTitle("Multi-Object Tracking (Local Conservative Splitting)")
 
+        self.resize(1400, 800)
         self.video_label = QLabel(self)
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setStyleSheet("background-color: black;")
-        
-        # Layouts
+
         main_layout = QHBoxLayout()
         control_layout = QVBoxLayout()
 
-        # File Selection
+        # File selection
         self.btn_file = QPushButton("Select Video File...")
         self.btn_file.clicked.connect(self.select_file)
         self.file_path_line = QLineEdit()
@@ -1008,134 +1887,133 @@ class MainWindow(QMainWindow):
         file_layout.addWidget(self.btn_file)
         file_layout.addWidget(self.file_path_line)
 
-        # Parameter Panel
+        # CSV Path
+        self.btn_csv = QPushButton("Output CSV Path...")
+        self.btn_csv.clicked.connect(self.select_csv)
+        self.csv_path_line = QLineEdit()
+        self.csv_path_line.setPlaceholderText("No CSV selected")
+
+        csv_layout = QHBoxLayout()
+        csv_layout.addWidget(self.btn_csv)
+        csv_layout.addWidget(self.csv_path_line)
+
+        # Parameter group
         param_group = QGroupBox("Parameters")
         form_layout = QFormLayout()
 
-        # SpinBoxes / Sliders for all needed parameters
-        # 1) MAX_TARGETS
-        self.spin_max_targets = QSpinBox()
-        self.spin_max_targets.setRange(1, 20)
-        self.spin_max_targets.setValue(4)
+        # Basic detection/tracking
+        self.spin_max_targets = QSpinBox(); self.spin_max_targets.setRange(1, 20); self.spin_max_targets.setValue(4)
         form_layout.addRow("Max Targets", self.spin_max_targets)
 
-        # 2) THRESHOLD_VALUE
-        self.spin_threshold = QSpinBox()
-        self.spin_threshold.setRange(0, 255)
-        self.spin_threshold.setValue(50)
+        self.spin_threshold = QSpinBox(); self.spin_threshold.setRange(0, 255); self.spin_threshold.setValue(50)
         form_layout.addRow("Threshold", self.spin_threshold)
 
-        # 3) MORPH_KERNEL_SIZE
-        self.spin_morph_size = QSpinBox()
-        self.spin_morph_size.setRange(1, 100)
-        self.spin_morph_size.setValue(5)
+        self.spin_morph_size = QSpinBox(); self.spin_morph_size.setRange(1, 50); self.spin_morph_size.setValue(5)
         form_layout.addRow("Morph Kernel Size", self.spin_morph_size)
 
-        # 4) MIN_CONTOUR_AREA
-        self.spin_min_contour = QSpinBox()
-        self.spin_min_contour.setRange(0, 100000)
-        self.spin_min_contour.setValue(50)
+        self.spin_min_contour = QSpinBox(); self.spin_min_contour.setRange(0, 20000); self.spin_min_contour.setValue(50)
         form_layout.addRow("Min Contour Area", self.spin_min_contour)
 
-        # 5) MAX_DISTANCE_THRESHOLD
-        self.spin_max_dist = QSpinBox()
-        self.spin_max_dist.setRange(0, 1000)
-        self.spin_max_dist.setValue(25)
+        self.spin_max_dist = QSpinBox(); self.spin_max_dist.setRange(0, 2000); self.spin_max_dist.setValue(25)
         form_layout.addRow("Max Distance Thresh", self.spin_max_dist)
 
-        # 6) MIN_DETECTION_COUNTS
-        self.spin_min_detect = QSpinBox()
-        self.spin_min_detect.setRange(0, 1000)
-        self.spin_min_detect.setValue(10)
+        self.spin_min_detect = QSpinBox(); self.spin_min_detect.setRange(0, 1000); self.spin_min_detect.setValue(10)
         form_layout.addRow("Min Detection Counts", self.spin_min_detect)
 
-        # 7) MIN_TRACKING_COUNTS
-        self.spin_min_track = QSpinBox()
-        self.spin_min_track.setRange(0, 1000)
-        self.spin_min_track.setValue(10)
+        self.spin_min_track = QSpinBox(); self.spin_min_track.setRange(0, 1000); self.spin_min_track.setValue(10)
         form_layout.addRow("Min Tracking Counts", self.spin_min_track)
 
-        # 8) TRAJECTORY_HISTORY_SECONDS
-        self.spin_traj_hist = QSpinBox()
-        self.spin_traj_hist.setRange(0, 300)
-        self.spin_traj_hist.setValue(5)
+        self.spin_traj_hist = QSpinBox(); self.spin_traj_hist.setRange(0, 300); self.spin_traj_hist.setValue(5)
         form_layout.addRow("Trajectory History (sec)", self.spin_traj_hist)
 
-        # 9) KALMAN_NOISE_COVARIANCE
-        self.spin_kalman_noise = QDoubleSpinBox()
-        self.spin_kalman_noise.setRange(0.0, 1.0)
+        # Kalman
+        self.spin_kalman_noise = QDoubleSpinBox(); self.spin_kalman_noise.setRange(0.0, 1.0); self.spin_kalman_noise.setValue(0.03)
         self.spin_kalman_noise.setSingleStep(0.01)
-        self.spin_kalman_noise.setValue(0.03)
         form_layout.addRow("Kalman Noise Cov", self.spin_kalman_noise)
 
-        # 10) KALMAN_MEASUREMENT_NOISE_COVARIANCE
-        self.spin_kalman_meas_noise = QDoubleSpinBox()
-        self.spin_kalman_meas_noise.setRange(0.0, 1.0)
+        self.spin_kalman_meas_noise = QDoubleSpinBox(); self.spin_kalman_meas_noise.setRange(0.0, 1.0); self.spin_kalman_meas_noise.setValue(0.1)
         self.spin_kalman_meas_noise.setSingleStep(0.01)
-        self.spin_kalman_meas_noise.setValue(0.1)
-        form_layout.addRow("Kalman Measurement Cov", self.spin_kalman_meas_noise)
+        form_layout.addRow("Kalman Meas Cov", self.spin_kalman_meas_noise)
 
-        # Checkboxes for overlays
-        self.chk_show_fg = QCheckBox("Show Foreground Mask")
-        self.chk_show_fg.setChecked(True)
+        # Resizing
+        self.spin_resize_factor = QDoubleSpinBox(); self.spin_resize_factor.setRange(0.1, 1.0); self.spin_resize_factor.setValue(1.0)
+        self.spin_resize_factor.setSingleStep(0.1)
+        form_layout.addRow("Resize Factor", self.spin_resize_factor)
+
+        # Merge area + local conservative
+        self.spin_merge_area_thr = QSpinBox(); self.spin_merge_area_thr.setRange(100, 100000); self.spin_merge_area_thr.setValue(1500)
+        form_layout.addRow("Merge Area Threshold", self.spin_merge_area_thr)
+
+        self.spin_conservative_kernel = QSpinBox(); self.spin_conservative_kernel.setRange(1, 50); self.spin_conservative_kernel.setValue(5)
+        form_layout.addRow("Conservative Kernel Size", self.spin_conservative_kernel)
+
+        self.spin_conservative_iter = QSpinBox(); self.spin_conservative_iter.setRange(1, 10); self.spin_conservative_iter.setValue(2)
+        form_layout.addRow("Conservative Erode Iter", self.spin_conservative_iter)
+
+        # Brightness/Contrast/Gamma
+        self.spin_brightness = QDoubleSpinBox(); self.spin_brightness.setRange(-255, 255); self.spin_brightness.setValue(0.0); self.spin_brightness.setSingleStep(5)
+        form_layout.addRow("Brightness", self.spin_brightness)
+
+        self.spin_contrast = QDoubleSpinBox(); self.spin_contrast.setRange(0.0, 3.0); self.spin_contrast.setValue(1.0); self.spin_contrast.setSingleStep(0.1)
+        form_layout.addRow("Contrast", self.spin_contrast)
+
+        self.spin_gamma = QDoubleSpinBox(); self.spin_gamma.setRange(0.1, 3.0); self.spin_gamma.setValue(1.0); self.spin_gamma.setSingleStep(0.1)
+        form_layout.addRow("Gamma", self.spin_gamma)
+
+        # Checkboxes
+        self.chk_show_fg = QCheckBox("Show Foreground Mask"); self.chk_show_fg.setChecked(True)
         form_layout.addRow(self.chk_show_fg)
 
-        self.chk_show_blob = QCheckBox("Show Blob Overlays")
-        self.chk_show_blob.setChecked(True)
+        self.chk_show_blob = QCheckBox("Show Blob Overlays"); self.chk_show_blob.setChecked(True)
         form_layout.addRow(self.chk_show_blob)
 
-        self.chk_show_bg = QCheckBox("Show Lightest Background")
-        self.chk_show_bg.setChecked(True)
+        self.chk_show_bg = QCheckBox("Show Lightest Background"); self.chk_show_bg.setChecked(True)
         form_layout.addRow(self.chk_show_bg)
 
         param_group.setLayout(form_layout)
 
-        # Buttons for controlling tracking
+        # Buttons: Preview / Full Tracking / Stop
         self.btn_preview = QPushButton("Preview")
         self.btn_preview.setCheckable(True)
         self.btn_preview.clicked.connect(self.toggle_preview)
 
-        self.btn_start_tracking = QPushButton("Start Full Tracking")
+        self.btn_start_tracking = QPushButton("Full Tracking")
         self.btn_start_tracking.clicked.connect(self.start_full_tracking)
 
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.clicked.connect(self.stop_tracking)
 
+        # Layout assembly
         control_layout.addLayout(file_layout)
+        control_layout.addLayout(csv_layout)
         control_layout.addWidget(param_group)
         control_layout.addWidget(self.btn_preview)
         control_layout.addWidget(self.btn_start_tracking)
         control_layout.addWidget(self.btn_stop)
         control_layout.addStretch(1)
 
-        # Add to main layout
         main_layout.addWidget(self.video_label, stretch=3)
         main_layout.addLayout(control_layout, stretch=1)
-
-        # Central widget
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
-        # Tracking worker + thread
         self.tracking_worker = None
 
+        # For storing final trajectories
+        self.final_trajectories = []
+
     def select_file(self):
-        """
-        Open a QFileDialog to let the user pick a video file (.mp4, .avi, etc.).
-        """
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mov)")
         if file_path:
             self.file_path_line.setText(file_path)
 
+    def select_csv(self):
+        csv_path, _ = QFileDialog.getSaveFileName(self, "Select CSV File to Save", "", "CSV Files (*.csv)")
+        if csv_path:
+            self.csv_path_line.setText(csv_path)
+
     def get_parameters_dict(self):
-        """
-        Collect all parameters from UI controls into a single dictionary.
-        Returns
-        -------
-        params : dict
-        """
-        # Build color set (deterministic or random)
         np.random.seed(42)
         max_targets = self.spin_max_targets.value()
         color_array = [tuple(c.tolist()) for c in np.random.randint(0, 255, (max_targets, 3))]
@@ -1151,6 +2029,16 @@ class MainWindow(QMainWindow):
             "TRAJECTORY_HISTORY_SECONDS": self.spin_traj_hist.value(),
             "KALMAN_NOISE_COVARIANCE": float(self.spin_kalman_noise.value()),
             "KALMAN_MEASUREMENT_NOISE_COVARIANCE": float(self.spin_kalman_meas_noise.value()),
+            "RESIZE_FACTOR": float(self.spin_resize_factor.value()),
+            "MERGE_AREA_THRESHOLD": self.spin_merge_area_thr.value(),
+
+            "CONSERVATIVE_KERNEL_SIZE": self.spin_conservative_kernel.value(),
+            "CONSERVATIVE_ERODE_ITER": self.spin_conservative_iter.value(),
+
+            "BRIGHTNESS": float(self.spin_brightness.value()),
+            "CONTRAST": float(self.spin_contrast.value()),
+            "GAMMA": float(self.spin_gamma.value()),
+
             "SHOW_FG": self.chk_show_fg.isChecked(),
             "SHOW_BLOB": self.chk_show_blob.isChecked(),
             "SHOW_BG": self.chk_show_bg.isChecked(),
@@ -1159,154 +2047,103 @@ class MainWindow(QMainWindow):
         return params
 
     def toggle_preview(self, checked):
-        """
-        Start or stop the preview mode depending on the button state.
-        """
         if checked:
-            # Start preview
             self.start_tracking(preview_mode=True)
             self.btn_preview.setText("Stop Preview")
         else:
-            # Stop preview
             self.stop_tracking()
             self.btn_preview.setText("Preview")
 
     def start_full_tracking(self):
-        """
-        Start a full run from beginning to end (saving results on completion).
-        """
-        # If preview is toggled on, turn it off
         if self.btn_preview.isChecked():
             self.btn_preview.setChecked(False)
             self.btn_preview.setText("Preview")
         self.start_tracking(preview_mode=False)
 
     def start_tracking(self, preview_mode: bool):
-        """
-        Common method to start either preview or full tracking.
-        
-        Parameters
-        ----------
-        preview_mode : bool
-            If True, user is in "Preview" mode; if False, "Full Tracking."
-        """
         video_path = self.file_path_line.text()
         if not video_path:
             QMessageBox.warning(self, "No file selected", "Please select a video file first!")
-            # Reset preview button
             if preview_mode:
                 self.btn_preview.setChecked(False)
                 self.btn_preview.setText("Preview")
             return
 
-        if self.tracking_worker is not None and self.tracking_worker.isRunning():
+        if self.tracking_worker and self.tracking_worker.isRunning():
             QMessageBox.warning(self, "Worker busy", "A tracking thread is already running. Stop it first.")
             return
 
         self.tracking_worker = TrackingWorker(video_path)
-        # Connect signals
+        self.tracking_worker.set_parameters(self.get_parameters_dict())
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
-
-        # Pass in parameters
-        self.tracking_worker.set_parameters(self.get_parameters_dict())
-
         self.tracking_worker.start()
 
     def stop_tracking(self):
-        """
-        Stop the running worker if it exists.
-        """
         if self.tracking_worker and self.tracking_worker.isRunning():
             self.tracking_worker.stop()
 
     @Slot(np.ndarray)
-    def on_new_frame(self, frame_bgr: np.ndarray):
-        """
-        Slot to receive new frames from the worker thread, convert to QImage and show.
-        
-        Parameters
-        ----------
-        frame_bgr : np.ndarray
-            The new BGR frame to display.
-        """
-        height, width, channel = frame_bgr.shape
-        bytes_per_line = channel * width
-        # Convert BGR -> RGB for display
-        rgb_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb_frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
+    def on_new_frame(self, rgb_frame: np.ndarray):
+        """Receive frames from worker -> QImage -> QPixmap -> Display."""
+        h, w, c = rgb_frame.shape
+        bytes_per_line = c * w
+        qimg = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(qimg))
 
-    @Slot(bool, list)
-    def on_tracking_finished(self, finished_normally: bool, fps_list: list):
-        """
-        Called when the worker signals it is finished. 
-        We can optionally save the CSV if it was a 'full' run or show an FPS plot, etc.
-        
-        Parameters
-        ----------
-        finished_normally : bool
-            True if the worker reached end of video, False if user forcibly stopped it.
-        fps_list : list
-            A list of FPS values over frames.
-        """
-        # Check if we were in full tracking mode or preview mode.
-        # We'll assume if "Preview" button is checked, we were in preview mode.
+    @Slot(bool, list, list)
+    def on_tracking_finished(self, finished_normally: bool, fps_list: list, final_trajectories: list):
+        """Called when worker finishes. We can save CSV if it's a full run."""
         preview_mode = self.btn_preview.isChecked()
         if preview_mode:
-            # Turn off the preview if the worker ended on its own
             self.btn_preview.setChecked(False)
             self.btn_preview.setText("Preview")
 
-        if finished_normally and (not preview_mode):
-            # Full run completed -> we can do "save results to CSV", 
-            # but the logic of saving the actual positions must happen in the worker or here. 
-            # In this example, let's prompt user that we can do it if needed.
-            # (For simplicity, we haven't plumbed the entire trajectory data from the worker. 
-            # One approach is to store it in the worker and pass it via a custom signal.)
-            self.save_trajectory_csv()
-            # Optionally display FPS plot
+        if finished_normally and not preview_mode:
+            self.final_trajectories = final_trajectories
+            QMessageBox.information(
+                self, "Tracking Finished",
+                "Full run completed. If an output CSV path is provided, results will be saved."
+            )
             self.plot_fps(fps_list)
+            self.save_trajectories_to_csv()
 
-    def save_trajectory_csv(self):
-        """
-        Example method for saving the results. For this demonstration, we show a message.
-        If you want to actually retrieve data from the worker, you'd define a new signal 
-        carrying self.trajectories and write them to CSV here.
-        """
-        # We do not have the actual trajectory data in the main thread. 
-        # You can add a new signal in the worker that emits the trajectory. 
-        # For demonstration, we show a message:
-        QMessageBox.information(self, "Save CSV", 
-                                "A full run completed. The worker would normally emit trajectory data.\n"
-                                "You could save that to a CSV file here. For demonstration, no file is written.")
+        gc.collect()
 
     def plot_fps(self, fps_list):
-        """
-        Displays an FPS plot using Matplotlib in a blocking fashion.
-        
-        Parameters
-        ----------
-        fps_list : list of float
-            The per-frame or running FPS values collected during tracking.
-        """
         if len(fps_list) < 2:
-            QMessageBox.information(self, "FPS Plot", "Not enough data to plot FPS.")
+            QMessageBox.information(self, "FPS Plot", "Not enough data to plot.")
             return
-
         plt.figure()
         plt.plot(fps_list, label="FPS")
         plt.xlabel("Frame Index")
-        plt.ylabel("Frames per Second")
+        plt.ylabel("Frames Per Second")
         plt.title("Tracking FPS Over Time")
         plt.legend()
         plt.show()
 
+    def save_trajectories_to_csv(self):
+        """
+        Write the final trajectories to the user-specified CSV, if any.
+        Format: [TargetID, FrameIndexInTarget, X, Y, Theta, Timestamp]
+        """
+        csv_path = self.csv_path_line.text()
+        if not csv_path:
+            # No user-specified path => skip
+            return
+        try:
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["TargetID", "Index", "X", "Y", "Theta", "Timestamp"])
+                for target_id, track_list in enumerate(self.final_trajectories):
+                    for idx, (x, y, th, tstamp) in enumerate(track_list):
+                        writer.writerow([target_id, idx, x, y, th, tstamp])
+            QMessageBox.information(self, "Saved CSV", f"Trajectories saved to {csv_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "CSV Error", f"Could not save CSV: {e}")
+
 
 def main():
-    """
-    Main entry-point to run the Fly Tracking UI (PySide2).
-    """
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
