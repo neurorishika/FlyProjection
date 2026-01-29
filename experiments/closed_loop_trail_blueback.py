@@ -256,7 +256,7 @@ if __name__ == "__main__":
         "--n_targets", type=int, default=5, help="Number of targets to track"
     )
     parser.add_argument(
-        "--display", type=bool, default=True, help="Display the tracking visualization"
+        "--display", type=bool, default=False, help="Display the tracking visualization"
     )
     args = parser.parse_args()
 
