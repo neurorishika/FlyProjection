@@ -253,9 +253,6 @@ if __name__ == "__main__":
         help="Dimension of the sphere of influence",
     )
     parser.add_argument(
-        "--n_targets", type=int, default=5, help="Number of targets to track"
-    )
-    parser.add_argument(
         "--display", type=bool, default=False, help="Display the tracking visualization"
     )
     args = parser.parse_args()
@@ -318,6 +315,11 @@ if __name__ == "__main__":
     ## copy this file to the experiment directory
     os.system(f"cp {os.path.abspath(__file__)} {experiment_dir}")
 
+    # Ask user for number of targets
+    n_targets = int(
+        get_string_answer_qt("Enter number of targets to track:", default="5")
+    )
+
     ### SETUP EXPERIMENT DATA CONFIGURATION ###
 
     # Setup configuration
@@ -356,7 +358,7 @@ if __name__ == "__main__":
     )
     datasets_config = {
         "data": {
-            "shape": (args.n_targets,),  # One row per frame, with one entry per target
+            "shape": (n_targets,),  # One row per frame, with one entry per target
             "dtype": data_dtype,
         }
     }
@@ -392,9 +394,9 @@ if __name__ == "__main__":
     if not start_experiment:
         sys.exit()
 
-    engagement = np.array([False] * args.n_targets)
-    in_task = np.array([False] * args.n_targets)
-    time_since_last_encounter = np.zeros(args.n_targets)
+    engagement = np.array([False] * n_targets)
+    in_task = np.array([False] * n_targets)
+    time_since_last_encounter = np.zeros(n_targets)
 
     engaged_paths = {}
     times = []
@@ -439,7 +441,7 @@ if __name__ == "__main__":
 
         with FastTracker(
             camera=camera,
-            n_targets=args.n_targets,
+            n_targets=n_targets,
             debug=args.display,
             smoothing_alpha=0.1,
         ) as tracker, Artist(
@@ -496,7 +498,7 @@ if __name__ == "__main__":
 
                     if estimates is not None:
                         # Create data
-                        data = np.zeros(args.n_targets, dtype=data_dtype)
+                        data = np.zeros(n_targets, dtype=data_dtype)
 
                         # Shuffle estimates to avoid engaging the same fly every time
                         random.shuffle(estimates)
