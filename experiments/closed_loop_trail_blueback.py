@@ -176,8 +176,8 @@ def attempt_engagement(
 ### DEFINE FIXED EXPERIMENT PARAMETERS ###
 
 # Experiment parameters
-burn_in_time = 30  # seconds
-max_time = 330  # seconds
+burn_in_time = 60  # seconds
+max_time = burn_in_time + 15 * 60  # seconds
 
 # Path parameters
 k_r = 1.0
