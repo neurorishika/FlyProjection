@@ -750,7 +750,17 @@ if __name__ == "__main__":
                             start_time = time.time()
                             last_time = None
                             started = True
-                            logger.warning(f"Started at {start_time}")
+                            end_time = start_time + (
+                                args.duration_pre
+                                + 2 * args.duration_stim_per_segment * args.n_repeats
+                                + args.duration_post
+                            )
+                            end_time_readable = datetime.datetime.fromtimestamp(
+                                end_time
+                            ).strftime("%Y-%m-%d %H:%M:%S")
+                            logger.warning(
+                                f"Experiment will end at {end_time_readable}"
+                            )
 
                         metadata = {"timestamp": current_time, "frame_number": frame_no}
                         # Save data
