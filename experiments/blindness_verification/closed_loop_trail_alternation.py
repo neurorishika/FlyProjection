@@ -55,8 +55,10 @@ def signal_handler(signum, frame):
 ### DEFINE CUSTOM FUNCTIONS SECTION STARTS HERE ###
 
 
+## THESE ARE THE FUNCTION TO GENERATE THE TRAIL PATHS AND CHECK ENGAGEMENT ##
 @njit
 def dynamics(state, t, c_r, k_r, r0, w, c_theta):
+    """Compute the derivatives for the polar dynamics model."""
     r, theta, r_dot, theta_dot = state
     drdt = r_dot
     dr_dotdt = -c_r * r_dot - k_r * (r - r0)
@@ -66,6 +68,7 @@ def dynamics(state, t, c_r, k_r, r0, w, c_theta):
 
 
 def check_orientation(initial_conditions_polar, r0):
+    """Check if the initial orientation is towards the trail."""
     r = initial_conditions_polar[0]
     r_dot = initial_conditions_polar[2]
     return not ((r < r0 and r_dot < 0) or (r > r0 and r_dot > 0))
@@ -74,6 +77,7 @@ def check_orientation(initial_conditions_polar, r0):
 def integrate_with_stopping(
     f, initial_state, t_max, dt, c_r, k_r, r0, w, c_theta, epsilon, max_steps
 ):
+    """Integrate the dynamics with stopping conditions."""
     trajectory = np.zeros((max_steps, len(initial_state)))
     trajectory[0] = initial_state
     t = 0.0
@@ -110,6 +114,7 @@ def attempt_engagement(
     thickness,
     task_boundary,
 ):
+    """Attempt to engage a fly based on its estimate."""
     if (
         engagement[estimate["id"]]
         or np.isnan(estimate["position"]).any()
@@ -186,7 +191,7 @@ def attempt_engagement(
 
 ### DEFINE FIXED EXPERIMENT PARAMETERS ###
 
-# Path parameters
+# Path parameters for generating trail paths
 k_r = 1.0
 c_r = 2 * np.sqrt(k_r)  # critical damping
 w = 0.2
@@ -197,13 +202,14 @@ dt = 0.05
 max_steps = int(t_max / dt)
 path_steps = 30
 
+# Trigger parameters
 min_v_threshold = 150
 max_angular_velocity = np.pi / 4
 
 # Task Specific Parameters
 actual_radius = 50  # mm; radius of the trail
 actual_thickness = 3  # mm; thickness of the trail
-max_time_outside_pretask = 3  # seconds; time after which a fly is considered engaged
+max_time_outside_pretask = 3  # seconds; time after which a fly is considered disengaged
 max_time_outside_intask = 10  # seconds; time after which a fly is considered disengaged
 actual_task_boundary = (
     5  # mm; boundary around when left results countdown to disengagement
@@ -241,22 +247,13 @@ if __name__ == "__main__":
 
     # define and parse command line arguments
     parser = argparse.ArgumentParser(
-        description="Open/Closed Loop Fly Projection System Rig Configuration"
+        description="Closed Loop Fly Projection System Rig Configuration"
     )
     parser.add_argument(
         "--repo_dir",
         type=str,
         default="/mnt/sda1/Rishika/FlyProjection/",
         help="Path to the repository directory",
-    )
-    parser.add_argument(
-        "--sphere_of_infuence",
-        type=int,
-        default=100,
-        help="Dimension of the sphere of influence",
-    )
-    parser.add_argument(
-        "--n_targets", type=int, default=5, help="Number of targets to track"
     )
     parser.add_argument(
         "--duration_pre",
@@ -275,6 +272,12 @@ if __name__ == "__main__":
         type=int,
         default=2,
         help="Number of repeats of the stimulus segments",
+    )
+    parser.add_argument(
+        "--start_blueback",
+        type=bool,
+        default=True,
+        help="Start with blue background segment",
     )
     parser.add_argument(
         "--duration_post",
@@ -345,6 +348,9 @@ if __name__ == "__main__":
     ## copy this file to the experiment directory
     os.system(f"cp {os.path.abspath(__file__)} {experiment_dir}")
 
+    ## get the number of targets from the user
+    n_targets = int(get_string_answer_qt("Enter number of targets: ", default="5"))
+
     ### SETUP EXPERIMENT DATA CONFIGURATION ###
 
     # Setup configuration
@@ -352,8 +358,8 @@ if __name__ == "__main__":
         "experiment": os.path.basename(__file__).replace(".py", ""),
         "experiment_name": experiment_name,
         "experiment_dir": experiment_dir,
-        # "variables": variables,
-        # "arguments": args,
+        "variables": variables,
+        "arguments": args,
     }
 
     metadata_config = {
@@ -383,7 +389,7 @@ if __name__ == "__main__":
     )
     datasets_config = {
         "data": {
-            "shape": (args.n_targets,),  # One row per frame, with one entry per target
+            "shape": (n_targets,),  # One row per frame, with one entry per target
             "dtype": data_dtype,
         }
     }
@@ -419,9 +425,9 @@ if __name__ == "__main__":
     if not start_experiment:
         sys.exit()
 
-    engagement = np.array([False] * args.n_targets)
-    in_task = np.array([False] * args.n_targets)
-    time_since_last_encounter = np.zeros(args.n_targets)
+    engagement = np.array([False] * n_targets)
+    in_task = np.array([False] * n_targets)
+    time_since_last_encounter = np.zeros(n_targets)
 
     engaged_paths = {}
     times = []
@@ -466,7 +472,7 @@ if __name__ == "__main__":
 
         with FastTracker(
             camera=camera,
-            n_targets=args.n_targets,
+            n_targets=n_targets,
             debug=args.display,
             smoothing_alpha=0.1,
         ) as tracker, Artist(
@@ -501,18 +507,41 @@ if __name__ == "__main__":
                         return_camera_image=True
                     )
 
-                    if started and current_time - start_time < burn_in_time:
-                        logger.info(f"Burn-in time: {current_time - start_time:.2f}s")
-                        continue
-
                     background = Drawing()
 
                     if started:
-                        # Draw background
-                        background.add_circle(
-                            center, arena_radius, color=background_color, fill=True
+                        elapsed_time = current_time - start_time
+                        current_segment = (
+                            int(
+                                (elapsed_time - args.duration_pre)
+                                / args.duration_stim_per_segment
+                            )
+                            % 2
                         )
-                        # Draw a circle in the center
+                        if elapsed_time <= args.duration_pre or elapsed_time >= (
+                            duration_pre
+                            + 2 * args.duration_stim_per_segment * args.n_repeats
+                        ):
+                            # we are in pre-trial period or post-trial period
+                            # we dont draw anything
+                            pass
+                        else:
+                            if (args.start_blueback and current_segment == 1) or (
+                                not args.start_blueback and current_segment == 0
+                            ):
+                                # Draw black background with red trail
+                                background_color = (0.0, 0.0, 0.0)
+                                trail_color = (1.0, 0.0, 0.0)
+                            else:
+                                # Draw blue background with purple trail
+                                background_color = (0.0, 0.0, 1.0)
+                                trail_color = (1.0, 0.0, 1.0)
+                        background.add_circle(
+                            center,
+                            arena_radius,
+                            color=background_color,
+                            fill=True,
+                        )
                         background.add_circle(
                             center,
                             radius,
@@ -523,7 +552,7 @@ if __name__ == "__main__":
 
                     if estimates is not None:
                         # Create data
-                        data = np.zeros(args.n_targets, dtype=data_dtype)
+                        data = np.zeros(n_targets, dtype=data_dtype)
 
                         # Shuffle estimates to avoid engaging the same fly every time
                         random.shuffle(estimates)
@@ -731,7 +760,12 @@ if __name__ == "__main__":
 
                         manager.write_frame_to_all([camera_image, stimulus_image])
 
-                    if started and current_time - start_time > max_time + burn_in_time:
+                    if started and current_time - start_time > (
+                        duration_pre
+                        + 2 * args.duration_stim_per_segment * args.n_repeats
+                        + args.duration_post
+                    ):
+                        print("Experiment duration complete. Exiting...")
                         break
 
                     if stop_event.is_set():
