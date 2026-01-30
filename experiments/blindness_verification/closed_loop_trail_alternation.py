@@ -324,6 +324,14 @@ if __name__ == "__main__":
     )  # mm to pixels
     radius = actual_radius * rig_config["physical_to_camera_scaling"]  # mm to pixels
 
+    duration_stim_per_segment = args.duration_stim_per_segment
+    n_repeats = args.n_repeats
+    duration_pre = args.duration_pre
+    duration_post = args.duration_post
+    max_time = (
+        2 * duration_stim_per_segment * n_repeats + duration_pre + duration_post
+    )  # total time for stimulus segments
+
     ### END PROCESS RIG PARAMETERS ###
 
     # SETUP EXPERIMENT DIRECTORY
@@ -513,18 +521,19 @@ if __name__ == "__main__":
                         elapsed_time = current_time - start_time
                         current_segment = (
                             int(
-                                (elapsed_time - args.duration_pre)
+                                (elapsed_time - duration_pre)
                                 / args.duration_stim_per_segment
                             )
                             % 2
                         )
-                        if elapsed_time <= args.duration_pre or elapsed_time >= (
-                            duration_pre
-                            + 2 * args.duration_stim_per_segment * args.n_repeats
+                        if (
+                            elapsed_time <= duration_pre
+                            or elapsed_time >= max_time - duration_post
                         ):
                             # we are in pre-trial period or post-trial period
                             # we dont draw anything
-                            pass
+                            background_color = (0.0, 0.0, 0.0)
+                            trail_color = (0.0, 0.0, 0.0)
                         else:
                             if (args.start_blueback and current_segment == 1) or (
                                 not args.start_blueback and current_segment == 0
@@ -536,19 +545,19 @@ if __name__ == "__main__":
                                 # Draw blue background with purple trail
                                 background_color = (0.0, 0.0, 1.0)
                                 trail_color = (1.0, 0.0, 1.0)
-                        background.add_circle(
-                            center,
-                            arena_radius,
-                            color=background_color,
-                            fill=True,
-                        )
-                        background.add_circle(
-                            center,
-                            radius,
-                            color=trail_color,
-                            fill=False,
-                            line_width=thickness,
-                        )
+                            background.add_circle(
+                                center,
+                                arena_radius,
+                                color=background_color,
+                                fill=True,
+                            )
+                            background.add_circle(
+                                center,
+                                radius,
+                                color=trail_color,
+                                fill=False,
+                                line_width=thickness,
+                            )
 
                     if estimates is not None:
                         # Create data
