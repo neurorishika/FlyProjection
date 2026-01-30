@@ -12,7 +12,7 @@ if __name__ == "__main__":
             color_image = server.create_radial(
                 center=(32, 3),
                 ring_width=2,
-                color1=(0, 0, 50),
+                color1=(0, 0, 255),
                 color2=(0, 0, 0),
             )
             # create window to display the image using OpenCV
@@ -28,7 +28,7 @@ if __name__ == "__main__":
                 server.send_image(color_image)
                 # cv2.imshow("LED Pattern", color_image.astype("uint8"))
                 # cv2.waitKey(1)
-                time.sleep(0.1)
+                time.sleep(0.5)
         except KeyboardInterrupt:
             print("Interrupted by user. Exiting...")
         finally:
