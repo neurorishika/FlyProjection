@@ -358,8 +358,8 @@ if __name__ == "__main__":
         "experiment": os.path.basename(__file__).replace(".py", ""),
         "experiment_name": experiment_name,
         "experiment_dir": experiment_dir,
-        "variables": variables,
-        "arguments": args,
+        # "variables": variables,
+        # "arguments": args,
     }
 
     metadata_config = {
