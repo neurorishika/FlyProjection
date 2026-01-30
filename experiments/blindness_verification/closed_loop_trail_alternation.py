@@ -286,7 +286,7 @@ if __name__ == "__main__":
         help="Duration of post-trial period in seconds",
     )
     parser.add_argument(
-        "--display", type=bool, default=True, help="Display the tracking visualization"
+        "--display", type=bool, default=False, help="Display the tracking visualization"
     )
     args = parser.parse_args()
 
