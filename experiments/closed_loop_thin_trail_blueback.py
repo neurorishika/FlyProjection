@@ -194,8 +194,8 @@ min_v_threshold = 150
 max_angular_velocity = np.pi / 4
 
 # Task Specific Parameters
-actual_radius = 50  # mm; radius of the trail
-actual_thickness = 5  # mm; thickness of the trail
+actual_radius = 40  # mm; radius of the trail
+actual_thickness = 1.5  # mm; thickness of the trail
 max_time_outside_pretask = 3  # seconds; time after which a fly is considered disengaged
 max_time_outside_intask = 10  # seconds; time after which a fly is considered disengaged
 actual_task_boundary = (
@@ -210,8 +210,8 @@ compass_color1 = (0, 0, 0)
 compass_color2 = (0, 0, 0)
 
 # trail parameters
-trail_color = (1, 0, 0)
-background_color = (0, 0, 0)
+trail_color = (1, 0, 1)
+background_color = (0, 0, 1)
 
 ### END FIXED EXPERIMENT PARAMETERS ###
 
