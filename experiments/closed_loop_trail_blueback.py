@@ -697,6 +697,13 @@ if __name__ == "__main__":
                             last_time = None
                             started = True
                             logger.warning(f"Started at {start_time}")
+                            end_time = start_time + max_time + burn_in_time
+                            end_time_readable = datetime.datetime.fromtimestamp(
+                                end_time
+                            ).strftime("%Y-%m-%d %H:%M:%S")
+                            logger.warning(
+                                f"Experiment will end at {end_time_readable}"
+                            )
 
                         metadata = {"timestamp": current_time, "frame_number": frame_no}
                         # Save data
