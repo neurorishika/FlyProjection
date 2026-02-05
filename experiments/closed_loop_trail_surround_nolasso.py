@@ -1,6 +1,3 @@
-import numpy as np
-import time
-import matplotlib.pyplot as plt
 from flyprojection.controllers.basler_camera import BaslerCamera
 from flyprojection.projection.artist import Artist, Drawing
 from flyprojection.behavior.tracker import FastTracker
@@ -9,30 +6,26 @@ from flyprojection.controllers.led_server import (
     KasaPowerController,
 )
 from flyprojection.utils.logging import AsyncLogger, AsyncHDF5Saver, MultiStreamManager
-from flyprojection.utils.geometry import (
-    cartesian_to_polar,
-    polar_to_cartesian,
-    resample_path,
-    paths_intersect,
-)
+from flyprojection.utils.geometry import cartesian_to_polar
 from flyprojection.utils.input import (
     get_directory_path_qt,
     get_string_answer_qt,
     get_boolean_answer_qt,
 )
+import numpy as np
+import time
+import matplotlib.pyplot as plt
 import json
 import os
 import datetime
 import signal
 import argparse
-from numba import njit
 import random
 import traceback
 import sys
-
-# Setup signal handler for graceful shutdown
 import threading
 
+# Setup signal handler for graceful shutdown
 stop_event = threading.Event()
 
 
@@ -44,147 +37,17 @@ def signal_handler(signum, frame):
 ### DEFINE CUSTOM FUNCTIONS ###
 
 
-@njit
-def dynamics(state, t, c_r, k_r, r0, w, c_theta):
-    r, theta, r_dot, theta_dot = state
-    drdt = r_dot
-    dr_dotdt = -c_r * r_dot - k_r * (r - r0)
-    dthetadt = theta_dot
-    dtheta_dotdt = -c_theta * (theta_dot - w)
-    return np.array([drdt, dthetadt, dr_dotdt, dtheta_dotdt])
-
-
-def check_orientation(initial_conditions_polar, r0):
-    r = initial_conditions_polar[0]
-    r_dot = initial_conditions_polar[2]
-    return not ((r < r0 and r_dot < 0) or (r > r0 and r_dot > 0))
-
-
-def integrate_with_stopping(
-    f, initial_state, t_max, dt, c_r, k_r, r0, w, c_theta, epsilon, max_steps
-):
-    trajectory = np.zeros((max_steps, len(initial_state)))
-    trajectory[0] = initial_state
-    t = 0.0
-    state = initial_state
-    step = 0
-
-    while t < t_max and abs(state[0] - r0) >= epsilon and step < max_steps - 1:
-        dx = dynamics(state, t, c_r, k_r, r0, w, c_theta)
-        state += dx * dt
-        t += dt
-        step += 1
-        trajectory[step] = state
-
-    return np.arange(step + 1) * dt, trajectory[: step + 1]
-
-
-def attempt_engagement(
-    estimate,
-    center,
-    radius,
-    engagement,
-    engaged_paths,
-    c_r,
-    k_r,
-    w,
-    c_theta,
-    epsilon,
-    t_max,
-    dt,
-    max_steps,
-    path_steps,
-    min_v_threshold,
-    max_angular_velocity,
-    thickness,
-    task_boundary,
-):
-    if (
-        engagement[estimate["id"]]
-        or np.isnan(estimate["position"]).any()
-        or np.isnan(estimate["direction"])
-        or np.isnan(estimate["velocity"])
-        or np.isnan(estimate["angular_velocity_smooth"])
-    ):
-        return None
-
-    if (
-        estimate["velocity"] < min_v_threshold
-        or abs(estimate["angular_velocity_smooth"]) > max_angular_velocity
-    ):
-        return None
-
-    # Precompute values for efficiency
-    delta_x = estimate["position"][0] - center[0]
-    delta_y = estimate["position"][1] - center[1]
-    r_dist = np.sqrt(delta_x**2 + delta_y**2)
-    scale_factor = np.sin(estimate["direction"] - np.arctan2(delta_y, delta_x))
-    magnitude = abs(radius - r_dist)
-
-    if magnitude < thickness / 2 + task_boundary:
-        return None
-
-    # Initial state in polar coordinates
-    state_polar = cartesian_to_polar(
-        (
-            estimate["position"][0],
-            estimate["position"][1],
-            magnitude * np.cos(estimate["direction"]),
-            magnitude * np.sin(estimate["direction"]),
-        ),
-        center,
-    )
-
-    if not check_orientation(state_polar, radius):
-        return None
-
-    w_ = w * np.sign(state_polar[3])
-
-    # Integrate
-    _, trajectory = integrate_with_stopping(
-        dynamics,
-        state_polar,
-        t_max,
-        dt,
-        c_r,
-        k_r,
-        radius,
-        w_,
-        c_theta,
-        epsilon,
-        max_steps,
-    )
-
-    # Convert trajectory to Cartesian and check intersections
-    cartesian_trajectory = np.array(
-        [polar_to_cartesian(st, center) for st in trajectory]
-    )
-    if any(
-        paths_intersect(cartesian_trajectory, path) for path in engaged_paths.values()
-    ):
-        return None
-
-    # resample to path_steps
-    cartesian_trajectory = resample_path(cartesian_trajectory, path_steps)
-
-    return cartesian_trajectory
-
-
 def get_color_at_position(
     position,
     center,
     radius,
     thickness,
-    engaged_paths,
-    fly_id,
-    in_task,
     trail_color,
     background_color,
 ):
     """
     Determine the color that should be displayed at a given position based on:
     1. Whether the position is on the central circular trail
-    2. Whether the position is on any engaged path for this fly
 
     Returns the appropriate color tuple (R, G, B).
     """
@@ -202,17 +65,6 @@ def get_color_at_position(
     if distance_from_trail < thickness / 2:
         return trail_color
 
-    # Check if position is on the engaged path for this fly
-    if fly_id in engaged_paths:
-        path = engaged_paths[fly_id]
-        # Check if position is within thickness/2 of any point on the path
-        for point in path:
-            dist_to_path_point = np.sqrt(
-                (position[0] - point[0]) ** 2 + (position[1] - point[1]) ** 2
-            )
-            if dist_to_path_point < thickness / 2:
-                return trail_color
-
     # Default to background color
     return background_color
 
@@ -226,28 +78,13 @@ def get_color_at_position(
 burn_in_time = 60  # seconds
 max_time = burn_in_time + 15 * 60  # seconds
 
-# Path parameters
-k_r = 1.0
-c_r = 2 * np.sqrt(k_r)  # critical damping
-w = 0.2
-c_theta = 1.0
-epsilon = 0.01
-t_max = 1000
-dt = 0.05
-max_steps = int(t_max / dt)
-path_steps = 30
-
 min_v_threshold = 150
 max_angular_velocity = np.pi / 4
 
 # Task Specific Parameters
 actual_radius = 50  # mm; radius of the trail
 actual_thickness = 5  # mm; thickness of the trail
-max_time_outside_pretask = 3  # seconds; time after which a fly is considered disengaged
 max_time_outside_intask = 10  # seconds; time after which a fly is considered disengaged
-actual_task_boundary = (
-    5  # mm; boundary around when left results countdown to disengagement
-)
 
 # compass parameters
 compass_center = (32, 3)
@@ -288,7 +125,7 @@ if __name__ == "__main__":
 
     # define and parse command line arguments
     parser = argparse.ArgumentParser(
-        description="Open/Closed Loop Fly Projection System - Surround Circle Mode"
+        description="Closed Loop Fly Projection System - Surround Circle Mode (No Lasso)"
     )
     parser.add_argument(
         "--repo_dir",
@@ -333,9 +170,6 @@ if __name__ == "__main__":
     center = rig_config["camera_space_arena_center"]
     arena_radius = rig_config["camera_space_arena_radius"]
 
-    task_boundary = (
-        actual_task_boundary * rig_config["physical_to_camera_scaling"]
-    )  # mm to pixels
     thickness = (
         actual_thickness * rig_config["physical_to_camera_scaling"]
     )  # mm to pixels
@@ -380,8 +214,6 @@ if __name__ == "__main__":
         "experiment": os.path.basename(__file__).replace(".py", ""),
         "experiment_name": experiment_name,
         "experiment_dir": experiment_dir,
-        # "variables": variables,
-        # "arguments": args,
     }
 
     metadata_config = {
@@ -400,13 +232,11 @@ if __name__ == "__main__":
             ("direction_smooth", np.float64),
             ("angular_velocity_smooth", np.float64),
             ("time_since_start", np.float64),
-            ("engagement", np.bool_),
             ("intask", np.bool_),
             ("distance_from_trail", np.float64),
             ("surround_color_r", np.float64),
             ("surround_color_g", np.float64),
             ("surround_color_b", np.float64),
-            ("engagement_path", np.uint16, (path_steps, 2)),
         ]
     )
     datasets_config = {
@@ -447,11 +277,9 @@ if __name__ == "__main__":
     if not start_experiment:
         sys.exit()
 
-    engagement = np.array([False] * n_targets)
     in_task = np.array([False] * n_targets)
     time_since_last_encounter = np.zeros(n_targets)
 
-    engaged_paths = {}
     times = []
 
     # Use camera as a context manager
@@ -533,7 +361,7 @@ if __name__ == "__main__":
                         logger.info(f"Burn-in time: {current_time - start_time:.2f}s")
                         continue
 
-                    # Create drawing for surround circles only (no full background/trail)
+                    # Create drawing
                     background = Drawing()
 
                     if started:
@@ -546,14 +374,9 @@ if __name__ == "__main__":
                         # Create data
                         data = np.zeros(n_targets, dtype=data_dtype)
 
-                        # Shuffle estimates to avoid engaging the same fly every time
-                        random.shuffle(estimates)
-
                         for estimate in estimates:
 
-                            path = None
-
-                            # get important_statistics
+                            # get important statistics
                             if not np.isnan(estimate["position"]).any():
                                 polar = cartesian_to_polar(
                                     (
@@ -574,9 +397,8 @@ if __name__ == "__main__":
                                 and distance_from_trail < thickness / 2
                             ):
                                 in_task[estimate["id"]] = True
-                                engagement[estimate["id"]] = False
-                                engaged_paths.pop(estimate["id"], None)
                                 time_since_last_encounter[estimate["id"]] = 0
+                                logger.info(f"Fly {estimate['id']} entered task")
 
                             # Determine the color at this fly's position
                             surround_color = get_color_at_position(
@@ -584,14 +406,11 @@ if __name__ == "__main__":
                                 center,
                                 radius,
                                 thickness,
-                                engaged_paths,
-                                estimate["id"],
-                                in_task[estimate["id"]],
                                 trail_color,
                                 background_color,
                             )
 
-                            # Track time since last encounter with trail/path
+                            # Track time since last encounter with trail
                             if in_task[estimate["id"]]:
                                 if distance_from_trail < thickness / 2:
                                     time_since_last_encounter[estimate["id"]] = 0
@@ -599,162 +418,27 @@ if __name__ == "__main__":
                                     time_since_last_encounter[
                                         estimate["id"]
                                     ] += delta_time
-                            else:
-                                # Check if on engaged path
-                                on_path = False
-                                if estimate["id"] in engaged_paths:
-                                    path_check = engaged_paths[estimate["id"]]
-                                    for point in path_check:
-                                        if not np.isnan(estimate["position"]).any():
-                                            dist = np.sqrt(
-                                                (estimate["position"][0] - point[0])
-                                                ** 2
-                                                + (estimate["position"][1] - point[1])
-                                                ** 2
-                                            )
-                                            if dist < thickness / 2:
-                                                on_path = True
-                                                break
-
-                                if on_path:
-                                    time_since_last_encounter[estimate["id"]] = 0
-                                else:
-                                    time_since_last_encounter[
-                                        estimate["id"]
-                                    ] += delta_time
-
-                            logger.info(
-                                f"Frame: {frame_no}, Framerate: {1 / delta_time if delta_time > 0 else 0:.2f} Hz, "
-                                f"ID: {estimate['id']}, Position: {estimate['position'][0]:.0f}, {estimate['position'][1]:.0f}, "
-                                f"Velocity: {estimate['velocity_smooth']:.2f}, Angle: {np.rad2deg(estimate['angle_smooth']):.2f}°, "
-                                f"Time Since Start: {estimate['time_since_start']:.2f}s, Angular Velocity: {estimate['angular_velocity_smooth']:.2f}, "
-                                f"Surround Color: {surround_color}"
-                            )
-
-                            if not engagement[estimate["id"]]:
-                                if in_task[estimate["id"]]:
                                     if (
                                         time_since_last_encounter[estimate["id"]]
                                         > max_time_outside_intask
-                                        or distance_from_trail
-                                        > thickness / 2 + task_boundary
                                     ):
                                         in_task[estimate["id"]] = False
-                                        path = attempt_engagement(
-                                            estimate,
-                                            center,
-                                            radius,
-                                            engagement,
-                                            engaged_paths,
-                                            c_r,
-                                            k_r,
-                                            w,
-                                            c_theta,
-                                            epsilon,
-                                            t_max,
-                                            dt,
-                                            max_steps,
-                                            path_steps,
-                                            min_v_threshold,
-                                            max_angular_velocity,
-                                            thickness,
-                                            task_boundary,
-                                        )
-                                    else:
-                                        path = None
-                                else:
-                                    # Check if fly is on its engaged path (virtual)
-                                    on_virtual_path = False
-                                    if estimate["id"] in engaged_paths:
-                                        path_check = engaged_paths[estimate["id"]]
-                                        for point in path_check:
-                                            if not np.isnan(estimate["position"]).any():
-                                                dist = np.sqrt(
-                                                    (estimate["position"][0] - point[0])
-                                                    ** 2
-                                                    + (
-                                                        estimate["position"][1]
-                                                        - point[1]
-                                                    )
-                                                    ** 2
-                                                )
-                                                if dist < thickness / 2:
-                                                    on_virtual_path = True
-                                                    break
-
-                                    if on_virtual_path:
-                                        # Start task - fly found the virtual path
-                                        in_task[estimate["id"]] = True
-                                    else:
-                                        # Try standard engagement
-                                        path = attempt_engagement(
-                                            estimate,
-                                            center,
-                                            radius,
-                                            engagement,
-                                            engaged_paths,
-                                            c_r,
-                                            k_r,
-                                            w,
-                                            c_theta,
-                                            epsilon,
-                                            t_max,
-                                            dt,
-                                            max_steps,
-                                            path_steps,
-                                            min_v_threshold,
-                                            max_angular_velocity,
-                                            thickness,
-                                            task_boundary,
-                                        )
-
-                                if path is not None:
-                                    # Mark engagement but DON'T draw the path
-                                    # Instead, store it for color calculation
-                                    engagement[estimate["id"]] = True
-                                    engaged_paths[estimate["id"]] = path
-
+                                        time_since_last_encounter[estimate["id"]] = 0
+                                        logger.info(f"Fly {estimate['id']} exited task")
                             else:
-                                # Already engaged, check if the fly is outside for too long
-                                if (
-                                    time_since_last_encounter[estimate["id"]]
-                                    > max_time_outside_pretask
-                                ):
-                                    in_task[estimate["id"]] = False
-                                    engagement[estimate["id"]] = False
-                                    engaged_paths.pop(estimate["id"], None)
-                                    time_since_last_encounter[estimate["id"]] = 0
-                                else:
-                                    # Keep the path for color calculation
-                                    path = engaged_paths[estimate["id"]]
+                                time_since_last_encounter[estimate["id"]] = 0
 
-                            # Draw surround circle around the fly with the computed color
-                            if started and not np.isnan(estimate["position"]).any():
-                                # Recalculate color in case path was just added
-                                surround_color = get_color_at_position(
-                                    estimate["position"],
-                                    center,
-                                    radius,
-                                    thickness,
-                                    engaged_paths,
-                                    estimate["id"],
-                                    in_task[estimate["id"]],
-                                    trail_color,
-                                    background_color,
-                                )
-                                if surround_color != background_color:
+                            # Draw surround circle if the fly is in the trail region
+                            if started and distance_from_trail < thickness / 2:
+                                if not np.isnan(estimate["position"]).any():
                                     background.add_circle(
-                                        tuple(estimate["position"]),
+                                        estimate["position"],
                                         surround_radius,
                                         color=surround_color,
                                         fill=True,
                                     )
 
-                            # turn path into numpy array of uint16
-                            if path is not None:
-                                path = np.array(path, dtype=np.uint16)
-
-                            # Update frame data
+                            # Save data
                             data[estimate["id"]] = (
                                 estimate["id"],
                                 estimate["position"][0],
@@ -767,21 +451,14 @@ if __name__ == "__main__":
                                 estimate["direction_smooth"],
                                 estimate["angular_velocity_smooth"],
                                 estimate["time_since_start"],
-                                engagement[estimate["id"]],
                                 in_task[estimate["id"]],
                                 distance_from_trail,
                                 surround_color[0],
                                 surround_color[1],
                                 surround_color[2],
-                                (
-                                    np.array(path)
-                                    if path is not None
-                                    else np.ones((path_steps, 2), dtype=np.uint16)
-                                    * np.nan
-                                ),
                             )
 
-                    logger.info(f"Engagement: {engagement} In Task: {in_task}")
+                    logger.info(f"In Task: {in_task}")
 
                     draw_fn = background.get_drawing_function()
                     stimulus_image = artist.draw_geometry(
@@ -796,16 +473,15 @@ if __name__ == "__main__":
 
                         # start time if not started
                         if not started:
-                            start_time = time.time()
-                            last_time = None
+                            start_time = current_time
+                            last_time = current_time
                             started = True
-                            logger.warning(f"Started at {start_time}")
-                            end_time = start_time + max_time + burn_in_time
-                            end_time_readable = datetime.datetime.fromtimestamp(
-                                end_time
-                            ).strftime("%Y-%m-%d %H:%M:%S")
-                            logger.warning(
-                                f"Experiment will end at {end_time_readable}"
+                            logger.info(
+                                "Experiment started. Start Time: {}".format(
+                                    datetime.datetime.fromtimestamp(
+                                        start_time
+                                    ).strftime("%Y-%m-%d %H:%M:%S")
+                                )
                             )
 
                         metadata = {"timestamp": current_time, "frame_number": frame_no}
