@@ -475,7 +475,7 @@ if __name__ == "__main__":
     ) as ir_led_controller, AsyncLogger(
         log_file=os.path.join(experiment_dir, "terminal.log"),
         logger_name=experiment_name,
-        level="WARNING",
+        level="INFO",
     ) as logger, AsyncHDF5Saver(
         h5_filename=os.path.join(experiment_dir, "data.h5"),
         datasets_config=datasets_config,
